@@ -79,11 +79,7 @@ export function clearTransientUiState() {
 }
 
 export async function createSettingsRecoveryPoint(reason = "manual") {
-  return invokeRecovery(
-    "create-settings-recovery-point",
-    reason,
-    getAppVersion()
-  );
+  return invokeRecovery("create-settings-recovery-point", reason, getAppVersion());
 }
 
 export async function listSettingsRecoveryPoints() {
@@ -102,6 +98,16 @@ export async function restoreLatestSettingsRecoveryPoint() {
     throw new Error("No settings recovery point is available");
   }
   return restoreSettingsRecoveryPoint(points[0].id);
+}
+
+export async function listOfficialRollbackVersions() {
+  const releases = await invokeRecovery("list-official-rollback-versions");
+  return Array.isArray(releases) ? releases : [];
+}
+
+export async function rollbackAscendaraVersion(version) {
+  if (!version) throw new Error("A rollback version is required");
+  return invokeRecovery("rollback-ascendara-version", version);
 }
 
 export function initializeRecoveryMode() {
