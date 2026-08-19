@@ -4,7 +4,9 @@ import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import {
   createSettingsRecoveryPoint,
+  listOfficialRollbackVersions,
   restoreLatestSettingsRecoveryPoint,
+  rollbackAscendaraVersion,
 } from "@/services/recoveryService";
 
 const SYSTEM_CENTER_EVENT = "ascendara:open-system-center";
@@ -111,6 +113,43 @@ export const useGlobalSearch = () => {
             .catch(error =>
               toast.error("Could not restore recovery point", { description: error.message })
             );
+        },
+      },
+      {
+        id: "rollback-previous-version",
+        type: "commands",
+        label: "Rollback to Previous Ascendara Version",
+        description: "Windows live branch only · uses an older official GitHub release",
+        badge: "Recovery",
+        onSelect: async () => {
+          const toastId = toast.loading("Checking official rollback versions…");
+          try {
+            const releases = await listOfficialRollbackVersions();
+            toast.dismiss(toastId);
+            if (releases.length === 0) {
+              toast.info("No supported previous version is available", {
+                description: "Binary rollback is available only on Windows live builds with an older official release.",
+              });
+              return;
+            }
+
+            const previous = releases[0];
+            const confirmed = window.confirm(
+              `Rollback Ascendara to ${previous.version}? A settings recovery point will be created first, then the official installer will be downloaded and Ascendara will close.`
+            );
+            if (!confirmed) return;
+
+            toast.loading(`Downloading Ascendara ${previous.version}…`, {
+              id: "ascendara-rollback",
+            });
+            await rollbackAscendaraVersion(previous.version);
+          } catch (error) {
+            toast.dismiss(toastId);
+            toast.error("Rollback could not start", {
+              id: "ascendara-rollback",
+              description: error.message,
+            });
+          }
         },
       },
       {
