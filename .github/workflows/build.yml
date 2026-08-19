@@ -8,10 +8,6 @@ on:
     branches:
       - main
 
-permissions:
-  contents: read
-  statuses: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,19 +15,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Mark developer build pending
-        if: github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body --silent --show-error \
-            --request POST \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            --data '{"state":"pending","context":"ascendara/developer-build","description":"Developer validation is running"}'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -44,15 +27,14 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
-      # Keep this before the tests so a retired privileged bridge cannot quietly
-      # return while its runtime behavior still happens to pass unit tests.
-      - name: Audit renderer security boundaries
+      # Keep the compatibility inventory visible without pretending the fork has already
+      # migrated away from the runtime settings used by the official Ascendara build.
+      - name: Audit renderer compatibility
         run: node scripts/security-audit.cjs
 
-      # Syntax-check the files that sit on the renderer/main privilege boundary before
-      # running tests. A malformed preload is much easier to diagnose here than as a
-      # blank Electron window later in the build.
-      - name: Check Electron security syntax
+      # Syntax-check the files on the Electron privilege boundary before the full build.
+      # A malformed preload is much easier to diagnose here than as a blank window later.
+      - name: Check Electron boundary syntax
         run: |
           node --check electron/preload.js
           node --check electron/modules/preload-bridge.js
@@ -61,18 +43,16 @@ jobs:
           node --check electron/modules/window.js
           node --check scripts/dev-smoke-test.cjs
 
-      # These tests are intentionally lightweight so security boundary changes fail fast
-      # before CI spends time building the full Electron package.
-      - name: Test security boundaries
+      # These tests stay deliberately lightweight so IPC/preload regressions fail before
+      # CI spends time packaging the complete Electron application.
+      - name: Test Electron boundaries
         run: node --test electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js electron/preload.api.test.js
 
       - name: Build
         run: yarn run build
 
-      # The smoke test now verifies the real isolated renderer: React must mount, the
-      # preload bridge must exist, Node globals must stay hidden, and startup must not
-      # throw. Strict legacy-IPC rejection remains unit-tested until the migration
-      # inventory reaches zero; enabling it here earlier would make the gate all-or-nothing.
+      # A Vite build can succeed even when the real Electron app crashes at startup. This
+      # launches Ascendara under Xvfb, checks React and the preload contract, and probes IPC.
       - name: Developer Electron smoke test
         run: node scripts/dev-smoke-test.cjs
 
@@ -81,35 +61,3 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           yarn buildwithelectron
-
-      # The connector can read commit statuses even when workflow-run discovery is not
-      # available. Publishing one result here makes every direct-main change verifiable
-      # without weakening or skipping any of the build steps above.
-      - name: Publish developer build result
-        if: always() && github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          case "${JOB_STATUS}" in
-            success)
-              STATE="success"
-              DESCRIPTION="Developer validation passed"
-              ;;
-            failure)
-              STATE="failure"
-              DESCRIPTION="Developer validation failed"
-              ;;
-            *)
-              STATE="error"
-              DESCRIPTION="Developer validation did not complete"
-              ;;
-          esac
-
-          curl --fail-with-body --silent --show-error \
-            --request POST \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            --data "{\"state\":\"${STATE}\",\"context\":\"ascendara/developer-build\",\"description\":\"${DESCRIPTION}\"}"
