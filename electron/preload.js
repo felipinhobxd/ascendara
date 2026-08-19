@@ -483,6 +483,7 @@ contextBridge.exposeInMainWorld("electron", {
   downloadUpdate: () => ipcRenderer.invoke("download-update"),
   updateAscendara: () => ipcRenderer.invoke("update-ascendara"),
   isUpdateDownloaded: () => ipcRenderer.invoke("is-update-downloaded"),
+  isBrokenVersion: () => ipcRenderer.invoke("is-broken-version"),
   deleteInstaller: () => ipcRenderer.invoke("delete-installer"),
   uninstallAscendara: () => ipcRenderer.invoke("uninstall-ascendara"),
   switchBranch: branch => ipcRenderer.invoke("switch-branch", branch),
