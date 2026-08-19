@@ -1,8 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  isPublicIpAddress,
-  normalizeCustomSourceUrl,
+  isAscendaraServiceHost,
+  normalizeExternalRequest,
   normalizeServiceRequest,
 } = require("./renderer-network");
 
@@ -84,69 +84,53 @@ test("renderer service requests only forward the headers needed by health checks
   });
 });
 
-test("custom sources require normal public HTTPS URLs", () => {
-  assert.equal(
-    normalizeCustomSourceUrl("https://example.com/list.json#latest").toString(),
-    "https://example.com/list.json"
-  );
+test("external requests preserve the official HTTPS helper contract", () => {
+  const result = normalizeExternalRequest("https://example.com:8443/list.json?source=custom", {
+    method: "get",
+    timeout: 30000,
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Custom Source Client",
+      Referer: "https://ascendara.app/",
+    },
+  });
+
+  assert.equal(result.parsedUrl.hostname, "example.com");
+  assert.equal(result.parsedUrl.port, "8443");
+  assert.equal(result.parsedUrl.pathname, "/list.json");
+  assert.equal(result.method, "GET");
+  assert.equal(result.timeout, 30000);
+  assert.deepEqual(result.headers, {
+    Accept: "application/json",
+    "User-Agent": "Custom Source Client",
+    Referer: "https://ascendara.app/",
+  });
+});
+
+test("external requests allow self-hosted HTTPS sources just like upstream", () => {
+  const local = normalizeExternalRequest("https://127.0.0.1:9443/catalog.json", {
+    method: "GET",
+  });
+  const lan = normalizeExternalRequest("https://catalog.internal:4443/games.json", {
+    method: "GET",
+  });
+
+  assert.equal(local.parsedUrl.hostname, "127.0.0.1");
+  assert.equal(local.parsedUrl.port, "9443");
+  assert.equal(lan.parsedUrl.hostname, "catalog.internal");
+  assert.equal(lan.parsedUrl.port, "4443");
+});
+
+test("external compatibility requests remain HTTPS-only", () => {
   assert.throws(
-    () => normalizeCustomSourceUrl("http://example.com/list.json"),
+    () => normalizeExternalRequest("http://example.com/list.json"),
     /must use HTTPS/
   );
-  assert.throws(
-    () => normalizeCustomSourceUrl("https://user:pass@example.com/list.json"),
-    /cannot contain credentials/
-  );
-  assert.throws(
-    () => normalizeCustomSourceUrl("https://example.com:8443/list.json"),
-    /standard HTTPS port/
-  );
-  assert.throws(
-    () => normalizeCustomSourceUrl("https://localhost/list.json"),
-    /host is not public/
-  );
-  assert.throws(
-    () => normalizeCustomSourceUrl("https://catalog.internal/list.json"),
-    /host is not public/
-  );
-  assert.throws(
-    () => normalizeCustomSourceUrl("https://[::1]/list.json"),
-    /IP address is not public/
-  );
 });
 
-test("custom source SSRF checks reject private and reserved IPv4 targets", () => {
-  for (const address of [
-    "0.0.0.0",
-    "10.0.0.1",
-    "100.64.0.1",
-    "127.0.0.1",
-    "169.254.169.254",
-    "172.16.0.1",
-    "192.168.1.1",
-    "198.18.0.1",
-    "224.0.0.1",
-  ]) {
-    assert.equal(isPublicIpAddress(address), false, address);
-  }
-
-  assert.equal(isPublicIpAddress("1.1.1.1"), true);
-  assert.equal(isPublicIpAddress("8.8.8.8"), true);
-});
-
-test("custom source SSRF checks reject local IPv6 targets", () => {
-  for (const address of [
-    "::",
-    "::1",
-    "::ffff:127.0.0.1",
-    "fc00::1",
-    "fd00::1",
-    "fe80::1",
-    "ff02::1",
-    "2001:db8::1",
-  ]) {
-    assert.equal(isPublicIpAddress(address), false, address);
-  }
-
-  assert.equal(isPublicIpAddress("2606:4700:4700::1111"), true);
+test("Ascendara service routing distinguishes official health hosts", () => {
+  assert.equal(isAscendaraServiceHost("https://api.ascendara.app/"), true);
+  assert.equal(isAscendaraServiceHost("https://monitor.ascendara.app/"), true);
+  assert.equal(isAscendaraServiceHost("https://example.com/list.json"), false);
+  assert.equal(isAscendaraServiceHost("not a url"), false);
 });
