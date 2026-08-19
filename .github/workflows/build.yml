@@ -43,6 +43,7 @@ jobs:
       - name: Check Electron boundary syntax
         run: |
           node --check electron/preload.js
+          node --check electron/modules/auth-helper.js
           node --check electron/modules/index.js
           node --check electron/modules/preload-bridge.js
           node --check electron/modules/renderer-network.js
@@ -56,7 +57,7 @@ jobs:
       # These tests stay deliberately lightweight so IPC/preload/recovery regressions fail
       # before CI spends time packaging the complete Electron application.
       - name: Test Electron boundaries
-        run: node --test electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js electron/modules/recovery.test.js electron/preload.api.test.js
+        run: node --test electron/modules/auth-helper.test.js electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js electron/modules/recovery.test.js electron/preload.api.test.js
 
       - name: Build
         run: yarn run build
