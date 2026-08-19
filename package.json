@@ -35,8 +35,6 @@
     "build-react": "vite build && electron-builder --config.extraMetadata.main=electron/app.js",
     "electron": "electron ./electron/app.js --no-sandbox",
     "start": "concurrently \"vite\" \"wait-on tcp:5173 && electron ./electron/app.js --no-sandbox\"",
-    "ensure-electron": "node scripts/ensure-electron.cjs",
-    "postinstall": "node scripts/ensure-electron.cjs",
     "dist": "python3 ./scripts/build_ascendara.py",
     "dist-linux": "python3 ./scripts/build_ascendara_linux.py",
     "buildwithelectron": "electron-builder --config.extraMetadata.main=electron/app.js",

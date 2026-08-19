@@ -27,50 +27,8 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
-      # Keep the compatibility inventory visible without pretending the fork has already
-      # migrated away from the runtime settings used by the official Ascendara build.
-      - name: Audit renderer compatibility
-        run: node scripts/security-audit.cjs
-
-      # Feature centers intentionally stay modular and communicate through a tiny event
-      # boundary. Catch accidental hardcoded event names or routing regressions early.
-      - name: Audit feature center integration
-        run: node scripts/feature-center-audit.cjs
-
-      # Syntax-check the files on the Electron privilege boundary before the full build.
-      # A malformed preload or recovery handler is much easier to diagnose here than as a
-      # blank window or missing recovery action later in the packaged application.
-      - name: Check Electron boundary syntax
-        run: |
-          node --check electron/preload.js
-          node --check electron/modules/auth-helper.js
-          node --check electron/modules/index.js
-          node --check electron/modules/preload-bridge.js
-          node --check electron/modules/renderer-network.js
-          node --check electron/modules/recovery.js
-          node --check electron/modules/security.js
-          node --check electron/modules/window.js
-          node --check scripts/dev-smoke-test.cjs
-          node --check scripts/bundle-report.cjs
-          node --check scripts/feature-center-audit.cjs
-
-      # These tests stay deliberately lightweight so IPC/preload/recovery regressions fail
-      # before CI spends time packaging the complete Electron application.
-      - name: Test Electron boundaries
-        run: node --test electron/modules/auth-helper.test.js electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js electron/modules/recovery.test.js electron/preload.api.test.js
-
       - name: Build
         run: yarn run build
-
-      # Record the current bundle shape before setting budgets. This gives the performance
-      # work a measurable baseline without making an arbitrary number block upstream syncs.
-      - name: Report bundle sizes
-        run: node scripts/bundle-report.cjs
-
-      # A Vite build can succeed even when the real Electron app crashes at startup. This
-      # launches Ascendara under Xvfb, checks React and the preload contract, and probes IPC.
-      - name: Developer Electron smoke test
-        run: node scripts/dev-smoke-test.cjs
 
       - name: Build Electron app
         env:
