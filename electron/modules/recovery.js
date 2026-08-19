@@ -1,10 +1,23 @@
 const fs = require("fs-extra");
 const path = require("path");
+const os = require("os");
+const https = require("https");
+const crypto = require("crypto");
+const { spawn } = require("child_process");
 const { app } = require("electron");
 const { getSettingsManager } = require("./settings");
+const { appBranch, appVersion, isWindows } = require("./config");
 
 const MAX_RECOVERY_POINTS = 5;
 const RECOVERY_ID_PATTERN = /^settings-\d{13}$/;
+const GITHUB_RELEASES_URL =
+  "https://api.github.com/repos/Ascendara/ascendara/releases?per_page=15";
+const MAX_ROLLBACK_BYTES = 1024 * 1024 * 1024;
+const ALLOWED_ROLLBACK_DOWNLOAD_HOSTS = new Set([
+  "github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+]);
 
 function getRecoveryDirectory() {
   return path.join(app.getPath("userData"), "recovery-points");
@@ -60,13 +73,10 @@ async function listRecoveryPoints() {
 async function pruneRecoveryPoints() {
   const points = await listRecoveryPoints();
   const stale = points.slice(MAX_RECOVERY_POINTS);
-
-  await Promise.all(
-    stale.map(point => fs.remove(getRecoveryPath(point.id)).catch(() => {}))
-  );
+  await Promise.all(stale.map(point => fs.remove(getRecoveryPath(point.id)).catch(() => {})));
 }
 
-async function createRecoveryPoint(reason = "manual", appVersion = null) {
+async function createRecoveryPoint(reason = "manual", version = appVersion) {
   const settingsPath = getSettingsFilePath();
   if (!(await fs.pathExists(settingsPath))) {
     throw new Error("Ascendara settings file does not exist yet");
@@ -86,7 +96,7 @@ async function createRecoveryPoint(reason = "manual", appVersion = null) {
       formatVersion: 1,
       id,
       createdAt: new Date(timestamp).toISOString(),
-      appVersion: appVersion || null,
+      appVersion: version || null,
       reason: String(reason || "manual").slice(0, 64),
       settings,
     },
@@ -94,7 +104,12 @@ async function createRecoveryPoint(reason = "manual", appVersion = null) {
   );
 
   await pruneRecoveryPoints();
-  return { id, createdAt: new Date(timestamp).toISOString(), appVersion, reason };
+  return {
+    id,
+    createdAt: new Date(timestamp).toISOString(),
+    appVersion: version || null,
+    reason,
+  };
 }
 
 async function restoreRecoveryPoint(id) {
@@ -121,9 +136,257 @@ async function restoreRecoveryPoint(id) {
   };
 }
 
+function parseVersion(value) {
+  const normalized = String(value || "").trim().replace(/^v/i, "");
+  const numericParts = normalized.match(/\d+/g) || [];
+  return numericParts.slice(0, 4).map(part => Number(part));
+}
+
+function compareVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (a[index] || 0) - (b[index] || 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function requestJson(rawUrl) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "api.github.com") {
+      reject(new Error("Rollback release metadata must come from the GitHub API"));
+      return;
+    }
+
+    const request = https.get(
+      parsed,
+      {
+        timeout: 15000,
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": `Ascendara/${appVersion} Recovery`,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+      response => {
+        if (response.statusCode !== 200) {
+          response.resume();
+          reject(new Error(`GitHub releases request failed with HTTP ${response.statusCode}`));
+          return;
+        }
+
+        let totalBytes = 0;
+        const chunks = [];
+        response.on("data", chunk => {
+          totalBytes += chunk.length;
+          if (totalBytes > 2 * 1024 * 1024) {
+            request.destroy(new Error("GitHub releases response exceeded the safety limit"));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on("end", () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          } catch (error) {
+            reject(new Error(`Could not parse GitHub release metadata: ${error.message}`));
+          }
+        });
+      }
+    );
+
+    request.on("timeout", () => request.destroy(new Error("GitHub releases request timed out")));
+    request.on("error", reject);
+  });
+}
+
+function selectWindowsInstaller(release) {
+  if (!Array.isArray(release?.assets)) return null;
+  return (
+    release.assets.find(asset => /^Ascendara\.Setup\..+\.exe$/i.test(asset.name || "")) ||
+    release.assets.find(asset => String(asset.name || "").toLowerCase().endsWith(".exe")) ||
+    null
+  );
+}
+
+async function getOfficialRollbackReleases() {
+  if (!isWindows || appBranch !== "live") return [];
+
+  const releases = await requestJson(GITHUB_RELEASES_URL);
+  if (!Array.isArray(releases)) return [];
+
+  return releases
+    .filter(release => !release.draft && !release.prerelease)
+    .map(release => ({ release, asset: selectWindowsInstaller(release) }))
+    .filter(({ release, asset }) => asset && compareVersions(release.tag_name, appVersion) < 0)
+    .map(({ release, asset }) => ({
+      version: String(release.tag_name || "").replace(/^v/i, ""),
+      name: release.name || release.tag_name,
+      publishedAt: release.published_at || release.created_at || null,
+      assetName: asset.name,
+      size: asset.size || 0,
+      hasDigest: typeof asset.digest === "string" && asset.digest.startsWith("sha256:"),
+    }))
+    .slice(0, 5);
+}
+
+async function findOfficialRollbackAsset(version) {
+  const releases = await requestJson(GITHUB_RELEASES_URL);
+  const requestedVersion = String(version || "").replace(/^v/i, "");
+  const release = Array.isArray(releases)
+    ? releases.find(
+        item =>
+          !item.draft &&
+          !item.prerelease &&
+          String(item.tag_name || "").replace(/^v/i, "") === requestedVersion &&
+          compareVersions(item.tag_name, appVersion) < 0
+      )
+    : null;
+
+  if (!release) throw new Error("Requested rollback version is not an older official release");
+  const asset = selectWindowsInstaller(release);
+  if (!asset?.browser_download_url) {
+    throw new Error("Official release does not contain a Windows installer");
+  }
+
+  return { release, asset };
+}
+
+function downloadOfficialInstaller(rawUrl, destination, expectedDigest, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 5) {
+      reject(new Error("Rollback installer exceeded the redirect limit"));
+      return;
+    }
+
+    const parsed = new URL(rawUrl);
+    if (
+      parsed.protocol !== "https:" ||
+      !ALLOWED_ROLLBACK_DOWNLOAD_HOSTS.has(parsed.hostname)
+    ) {
+      reject(new Error(`Rollback installer host is not allowed: ${parsed.hostname}`));
+      return;
+    }
+
+    const request = https.get(
+      parsed,
+      {
+        timeout: 30000,
+        headers: {
+          Accept: "application/octet-stream",
+          "User-Agent": `Ascendara/${appVersion} Recovery`,
+        },
+      },
+      response => {
+        if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+          response.resume();
+          const nextUrl = new URL(response.headers.location, parsed).toString();
+          downloadOfficialInstaller(nextUrl, destination, expectedDigest, redirectCount + 1).then(
+            resolve,
+            reject
+          );
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          response.resume();
+          reject(new Error(`Rollback installer download failed with HTTP ${response.statusCode}`));
+          return;
+        }
+
+        const contentLength = Number(response.headers["content-length"] || 0);
+        if (contentLength > MAX_ROLLBACK_BYTES) {
+          response.resume();
+          reject(new Error("Rollback installer exceeds the 1 GB safety limit"));
+          return;
+        }
+
+        const hash = crypto.createHash("sha256");
+        const writer = fs.createWriteStream(destination);
+        let totalBytes = 0;
+        let finished = false;
+
+        const fail = error => {
+          if (finished) return;
+          finished = true;
+          writer.destroy();
+          fs.remove(destination).catch(() => {});
+          reject(error);
+        };
+
+        response.on("data", chunk => {
+          totalBytes += chunk.length;
+          if (totalBytes > MAX_ROLLBACK_BYTES) {
+            request.destroy(new Error("Rollback installer exceeds the 1 GB safety limit"));
+            return;
+          }
+          hash.update(chunk);
+        });
+        response.on("error", fail);
+        writer.on("error", fail);
+        writer.on("finish", () => {
+          if (finished) return;
+          const actualDigest = hash.digest("hex");
+          const normalizedExpected = String(expectedDigest || "").replace(/^sha256:/i, "");
+          if (normalizedExpected && actualDigest !== normalizedExpected.toLowerCase()) {
+            fail(new Error("Rollback installer SHA-256 digest did not match the GitHub release"));
+            return;
+          }
+          finished = true;
+          resolve({ path: destination, sha256: actualDigest, size: totalBytes });
+        });
+
+        response.pipe(writer);
+      }
+    );
+
+    request.on("timeout", () => request.destroy(new Error("Rollback installer download timed out")));
+    request.on("error", error => {
+      fs.remove(destination).catch(() => {});
+      reject(error);
+    });
+  });
+}
+
+async function rollbackToVersion(version) {
+  if (!isWindows) throw new Error("Binary rollback is currently supported on Windows only");
+  if (appBranch !== "live") {
+    throw new Error("Binary rollback is only available on Ascendara's live branch");
+  }
+
+  const { release, asset } = await findOfficialRollbackAsset(version);
+  const normalizedVersion = String(release.tag_name || "").replace(/^v/i, "");
+
+  await createRecoveryPoint(`before-rollback-${normalizedVersion}`, appVersion);
+
+  const rollbackDirectory = path.join(os.tmpdir(), "ascendara-rollback");
+  await fs.ensureDir(rollbackDirectory);
+  const installerPath = path.join(
+    rollbackDirectory,
+    `Ascendara.Setup.${normalizedVersion}.exe`
+  );
+
+  await fs.remove(installerPath).catch(() => {});
+  await downloadOfficialInstaller(asset.browser_download_url, installerPath, asset.digest || null);
+
+  const installerProcess = spawn(installerPath, [], {
+    detached: true,
+    stdio: "ignore",
+  });
+  installerProcess.unref();
+
+  // Match the official update flow: start the trusted installer first, then let Electron
+  // exit so the installer can replace application files without fighting open handles.
+  setTimeout(() => app.quit(), 250);
+  return { success: true, version: normalizedVersion };
+}
+
 function registerRecoveryHandlers(ipcMain) {
-  ipcMain.handle("create-settings-recovery-point", (_event, reason, appVersion) =>
-    createRecoveryPoint(reason, appVersion)
+  ipcMain.handle("create-settings-recovery-point", (_event, reason, version) =>
+    createRecoveryPoint(reason, version)
   );
 
   ipcMain.handle("list-settings-recovery-points", () => listRecoveryPoints());
@@ -133,13 +396,20 @@ function registerRecoveryHandlers(ipcMain) {
     event.sender.send("settings-updated", result.settings);
     return result;
   });
+
+  ipcMain.handle("list-official-rollback-versions", () => getOfficialRollbackReleases());
+  ipcMain.handle("rollback-ascendara-version", (_event, version) => rollbackToVersion(version));
 }
 
 module.exports = {
   MAX_RECOVERY_POINTS,
+  compareVersions,
   createRecoveryPoint,
+  getOfficialRollbackReleases,
   getRecoveryDirectory,
   listRecoveryPoints,
+  parseVersion,
   registerRecoveryHandlers,
   restoreRecoveryPoint,
+  rollbackToVersion,
 };
