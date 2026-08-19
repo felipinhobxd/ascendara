@@ -12,7 +12,6 @@
 //=============================================================================
 
 const { contextBridge, ipcRenderer } = require("electron");
-const https = require("https");
 const { createPreloadIpcTransport } = require("./modules/preload-bridge");
 
 // Keep listener wrapping and legacy bookkeeping outside the exposed object. The page
@@ -541,37 +540,15 @@ contextBridge.exposeInMainWorld("electron", {
   getSteamGridUrls: gameName => ipcRenderer.invoke("steamgrid-get-urls", gameName),
   getSteamGridHeader: gameName => ipcRenderer.invoke("steamgrid-get-header", gameName),
 
-  // Legacy HTTPS request helper. It remains here for compatibility while its callers
-  // are moved to explicit main-process APIs; new renderer code should use fetch/proxies.
-  request: (url, options) => {
-    return new Promise((resolve, reject) => {
-      const req = https.request(
-        url,
-        {
-          method: options.method,
-          headers: options.headers,
-          timeout: options.timeout,
-        },
-        res => {
-          let data = "";
-          res.on("data", chunk => (data += chunk));
-          res.on("end", () => {
-            resolve({
-              ok: res.statusCode >= 200 && res.statusCode < 300,
-              status: res.statusCode,
-              data: data,
-            });
-          });
-        }
-      );
-      req.on("error", error => reject(error));
-      req.on("timeout", () => {
-        req.destroy();
-        reject(new Error("Request timed out"));
-      });
-      req.end();
-    });
-  },
+  // Status checks use a deliberately narrow main-process request handler. The host,
+  // method, headers, timeout and response size are all constrained on the other side.
+  requestAscendaraService: (url, options) =>
+    ipcRenderer.invoke("request-ascendara-service", url, options),
+
+  // Kept as a temporary compatibility alias for older renderer code. It is no longer
+  // a general Node HTTPS escape hatch; the same strict main-process policy applies.
+  request: (url, options) =>
+    ipcRenderer.invoke("request-ascendara-service", url, options),
 
   //===========================================================================
   // SUPPORT & PROFILE
