@@ -30,15 +30,6 @@ const Navigation = memo(({ items }) => {
   });
   const [downloadCount, setDownloadCount] = useState(0);
   const downloadCountRef = useRef(0);
-  const [downloadDockVisible, setDownloadDockVisible] = useState(true);
-  const downloadDockVisibleRef = useRef(true);
-  const downloadDockPointerActiveRef = useRef(false);
-
-  const setDockVisibility = useCallback(visible => {
-    if (downloadDockVisibleRef.current === visible) return;
-    downloadDockVisibleRef.current = visible;
-    setDownloadDockVisible(visible);
-  }, []);
 
   const handleMouseDown = useCallback(
     (e, isLeft) => {
@@ -102,69 +93,6 @@ const Navigation = memo(({ items }) => {
     },
     [location.pathname]
   );
-
-  const isDownloadPage = location.pathname === "/download";
-
-  useEffect(() => {
-    if (!isDownloadPage) {
-      downloadDockPointerActiveRef.current = false;
-      setDockVisibility(true);
-      return undefined;
-    }
-
-    const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches === true;
-    if (coarsePointer) {
-      setDockVisibility(true);
-      return undefined;
-    }
-
-    const updateForScroll = () => {
-      if (window.scrollY <= 120) {
-        downloadDockPointerActiveRef.current = false;
-        setDockVisibility(true);
-        return;
-      }
-
-      if (!downloadDockPointerActiveRef.current) {
-        setDockVisibility(false);
-      }
-    };
-
-    const handlePointerMove = event => {
-      if (window.scrollY <= 120) {
-        downloadDockPointerActiveRef.current = false;
-        setDockVisibility(true);
-        return;
-      }
-
-      const revealEdge = window.innerHeight - 24;
-      const keepVisibleEdge = window.innerHeight - 130;
-
-      if (!downloadDockVisibleRef.current && event.clientY >= revealEdge) {
-        downloadDockPointerActiveRef.current = true;
-        setDockVisibility(true);
-        return;
-      }
-
-      if (downloadDockVisibleRef.current && event.clientY >= keepVisibleEdge) {
-        downloadDockPointerActiveRef.current = true;
-        return;
-      }
-
-      downloadDockPointerActiveRef.current = false;
-      setDockVisibility(false);
-    };
-
-    updateForScroll();
-    window.addEventListener("scroll", updateForScroll, { passive: true });
-    window.addEventListener("pointermove", handlePointerMove, { passive: true });
-
-    return () => {
-      window.removeEventListener("scroll", updateForScroll);
-      window.removeEventListener("pointermove", handlePointerMove);
-      downloadDockPointerActiveRef.current = false;
-    };
-  }, [isDownloadPage, setDockVisibility]);
 
   const navItems = useMemo(() => {
     const items = [
@@ -323,17 +251,8 @@ const Navigation = memo(({ items }) => {
     };
   }, []);
 
-  const dockIsHidden = isDownloadPage && !downloadDockVisible;
-
   return (
-    <div
-      aria-hidden={dockIsHidden}
-      className={`pointer-events-none fixed bottom-0 left-0 right-0 z-40 select-none p-6 transition-all duration-200 ${
-        dockIsHidden
-          ? "invisible translate-y-4 opacity-0"
-          : "visible translate-y-0 opacity-100"
-      }`}
-    >
+    <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-40 select-none p-6">
       <div className="nav-container relative mx-auto max-w-xl" style={navStyle}>
         <div
           className="pointer-events-auto relative flex items-center justify-center gap-2 rounded-2xl border border-border p-3 shadow-lg backdrop-blur-lg"

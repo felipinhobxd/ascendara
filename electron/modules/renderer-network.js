@@ -167,20 +167,30 @@ function requestExternalResource(rawUrl, options = {}) {
   });
 }
 
-function isAscendaraServiceHost(rawUrl) {
+function isAscendaraHealthRequest(rawUrl) {
   try {
-    return ALLOWED_SERVICE_HOSTS.has(new URL(rawUrl).hostname);
+    const parsedUrl = new URL(rawUrl);
+    return Boolean(
+      parsedUrl.protocol === "https:" &&
+        ALLOWED_SERVICE_HOSTS.has(parsedUrl.hostname) &&
+        !parsedUrl.username &&
+        !parsedUrl.password &&
+        (!parsedUrl.port || parsedUrl.port === "443") &&
+        parsedUrl.pathname === "/" &&
+        !parsedUrl.search &&
+        !parsedUrl.hash
+    );
   } catch {
     return false;
   }
 }
 
 function registerRendererNetworkHandlers(ipcMain) {
-  // The preload compatibility alias still calls this channel. Keep that old contract
-  // intact: Ascendara health checks take the narrow path, while external URLs behave like
-  // the official preload's https.request helper until callers migrate naturally.
+  // The legacy request alias is shared by service status checks and official External
+  // Sources flows. Only the exact root status endpoints take the narrow path; other HTTPS
+  // routes, including api.ascendara.app source-bucket routes, keep upstream behavior.
   ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) => {
-    if (isAscendaraServiceHost(rawUrl)) {
+    if (isAscendaraHealthRequest(rawUrl)) {
       return requestAscendaraService(rawUrl, options);
     }
     return requestExternalResource(rawUrl, options);
@@ -196,7 +206,7 @@ function registerRendererNetworkHandlers(ipcMain) {
 
 module.exports = {
   ALLOWED_SERVICE_HOSTS,
-  isAscendaraServiceHost,
+  isAscendaraHealthRequest,
   normalizeExternalRequest,
   normalizeServiceRequest,
   registerRendererNetworkHandlers,

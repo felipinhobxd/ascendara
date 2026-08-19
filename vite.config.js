@@ -6,46 +6,6 @@ import pkg from "./package.json";
 
 const plugins = [react()];
 
-function getVendorChunk(id) {
-  if (!id.includes("node_modules")) return undefined;
-
-  // Keep framework code stable across page edits. This does not change runtime behavior,
-  // but it stops a small Ascendara change from invalidating every large dependency chunk.
-  if (
-    id.includes("/react/") ||
-    id.includes("/react-dom/") ||
-    id.includes("/react-router") ||
-    id.includes("/scheduler/")
-  ) {
-    return "vendor-react";
-  }
-
-  // Firebase is one of the heaviest dependency families and changes independently from
-  // the launcher UI, so isolating it improves cache reuse for users who update often.
-  if (id.includes("/firebase/") || id.includes("/@firebase/")) {
-    return "vendor-firebase";
-  }
-
-  if (id.includes("/framer-motion/")) {
-    return "vendor-motion";
-  }
-
-  if (
-    id.includes("/@radix-ui/") ||
-    id.includes("/lucide-react/") ||
-    id.includes("/sonner/") ||
-    id.includes("/next-themes/")
-  ) {
-    return "vendor-ui";
-  }
-
-  if (id.includes("/recharts/") || id.includes("/d3-")) {
-    return "vendor-charts";
-  }
-
-  return "vendor";
-}
-
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: plugins,
@@ -191,9 +151,6 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: path.join(__dirname, "src/index.html"),
-      output: {
-        manualChunks: getVendorChunk,
-      },
     },
     assetsDir: "assets",
     sourcemap: true,

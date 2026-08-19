@@ -55,7 +55,13 @@ async function listRecoveryPoints() {
 
     try {
       const payload = await fs.readJson(path.join(recoveryDirectory, entry));
-      if (!payload?.settings || typeof payload.settings !== "object") continue;
+      if (
+        !payload?.settings ||
+        typeof payload.settings !== "object" ||
+        Array.isArray(payload.settings)
+      ) {
+        continue;
+      }
       points.push({
         id,
         createdAt: payload.createdAt || null,
@@ -205,10 +211,21 @@ function requestJson(rawUrl) {
 
 function selectWindowsInstaller(release) {
   if (!Array.isArray(release?.assets)) return null;
+
+  const version = String(release.tag_name || "").replace(/^v/i, "");
+  if (!version) return null;
+  const expectedNames = new Set([
+    `Ascendara Setup ${version}.exe`,
+    `Ascendara.Setup.${version}.exe`,
+  ]);
+
+  // Match the release version exactly. This accepts electron-builder's normal NSIS
+  // artifact name and Ascendara's historical dotted variant without ever choosing an
+  // unrelated executable that happens to be attached to the same release.
   return (
-    release.assets.find(asset => /^Ascendara\.Setup\..+\.exe$/i.test(asset.name || "")) ||
-    release.assets.find(asset => String(asset.name || "").toLowerCase().endsWith(".exe")) ||
-    null
+    release.assets.find(asset =>
+      expectedNames.has(String(asset.name || "").trim())
+    ) || null
   );
 }
 
@@ -221,7 +238,12 @@ async function getOfficialRollbackReleases() {
   return releases
     .filter(release => !release.draft && !release.prerelease)
     .map(release => ({ release, asset: selectWindowsInstaller(release) }))
-    .filter(({ release, asset }) => asset && compareVersions(release.tag_name, appVersion) < 0)
+    .filter(
+      ({ release, asset }) =>
+        asset &&
+        Number(asset.size || 0) <= MAX_ROLLBACK_BYTES &&
+        compareVersions(release.tag_name, appVersion) < 0
+    )
     .map(({ release, asset }) => ({
       version: String(release.tag_name || "").replace(/^v/i, ""),
       name: release.name || release.tag_name,
@@ -249,7 +271,10 @@ async function findOfficialRollbackAsset(version) {
   if (!release) throw new Error("Requested rollback version is not an older official release");
   const asset = selectWindowsInstaller(release);
   if (!asset?.browser_download_url) {
-    throw new Error("Official release does not contain a Windows installer");
+    throw new Error("Official release does not contain the expected Ascendara installer");
+  }
+  if (Number(asset.size || 0) > MAX_ROLLBACK_BYTES) {
+    throw new Error("Official rollback installer exceeds the 1 GB safety limit");
   }
 
   return { release, asset };
@@ -351,6 +376,21 @@ function downloadOfficialInstaller(rawUrl, destination, expectedDigest, redirect
   });
 }
 
+function launchRollbackInstaller(installerPath) {
+  return new Promise((resolve, reject) => {
+    const installerProcess = spawn(installerPath, [], {
+      detached: true,
+      stdio: "ignore",
+    });
+
+    installerProcess.once("error", reject);
+    installerProcess.once("spawn", () => {
+      installerProcess.unref();
+      resolve();
+    });
+  });
+}
+
 async function rollbackToVersion(version) {
   if (!isWindows) throw new Error("Binary rollback is currently supported on Windows only");
   if (appBranch !== "live") {
@@ -371,15 +411,10 @@ async function rollbackToVersion(version) {
 
   await fs.remove(installerPath).catch(() => {});
   await downloadOfficialInstaller(asset.browser_download_url, installerPath, asset.digest || null);
+  await launchRollbackInstaller(installerPath);
 
-  const installerProcess = spawn(installerPath, [], {
-    detached: true,
-    stdio: "ignore",
-  });
-  installerProcess.unref();
-
-  // Match the official update flow: start the trusted installer first, then let Electron
-  // exit so the installer can replace application files without fighting open handles.
+  // Only close Ascendara after Windows has confirmed that the trusted installer process
+  // exists. A launch failure now returns to the UI instead of closing the working app.
   setTimeout(() => app.quit(), 250);
   return { success: true, version: normalizedVersion };
 }

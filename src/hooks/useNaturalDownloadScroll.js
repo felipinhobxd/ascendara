@@ -11,8 +11,8 @@ function readScrollTop(args) {
 
 /**
  * Keep the legacy Download page scroll snap from taking over immediately after
- * a real user scroll. The page still resets to the top on entry and intentional
- * programmatic scrolling remains available when the user is not actively moving it.
+ * a real user gesture. Scripted scrolling is intentionally not treated as user
+ * input, otherwise the first scrollTo call can block the animation that follows it.
  */
 export function useNaturalDownloadScroll(enabled) {
   useEffect(() => {
@@ -48,16 +48,14 @@ export function useNaturalDownloadScroll(enabled) {
       return originalScrollTo.apply(window, args);
     };
 
-    // Capture runs before the Download page's legacy scroll listener. That lets us
-    // mark the gesture before its requestAnimationFrame tries to snap the viewport.
-    window.addEventListener("scroll", markUserScroll, { capture: true, passive: true });
+    // Listen to movement events rather than `scroll`: programmatic scrollTo calls also
+    // emit `scroll`, while a plain touch without movement should not suppress scripts.
     window.addEventListener("wheel", markUserScroll, { capture: true, passive: true });
     window.addEventListener("touchmove", markUserScroll, { capture: true, passive: true });
     window.addEventListener("keydown", handleScrollKey, { capture: true });
     window.scrollTo = guardedScrollTo;
 
     return () => {
-      window.removeEventListener("scroll", markUserScroll, true);
       window.removeEventListener("wheel", markUserScroll, true);
       window.removeEventListener("touchmove", markUserScroll, true);
       window.removeEventListener("keydown", handleScrollKey, true);

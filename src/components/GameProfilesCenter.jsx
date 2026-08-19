@@ -44,12 +44,14 @@ function profilesMatch(left, right) {
 const GameProfilesCenter = () => {
   const { t } = useLanguage();
   const requestedGameRef = useRef(null);
+  const profileRequestRef = useRef(0);
   const [games, setGames] = useState([]);
   const [selectedKey, setSelectedKey] = useState("");
   const [loadingGames, setLoadingGames] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [profileError, setProfileError] = useState("");
   const [backupOpen, setBackupOpen] = useState(false);
   const [isLinux, setIsLinux] = useState(false);
   const [profile, setProfile] = useState(EMPTY_PROFILE);
@@ -108,31 +110,58 @@ const GameProfilesCenter = () => {
 
   const loadProfile = useCallback(
     async game => {
+      const requestId = ++profileRequestRef.current;
+      setProfileError("");
+
       if (!game) {
         setProfile(EMPTY_PROFILE);
         setSavedProfile(EMPTY_PROFILE);
+        setLoadingProfile(false);
         return;
       }
 
+      // Clear the previous game immediately so a failed or slow request can never
+      // leave another game's profile visible under the newly selected title.
+      setProfile(EMPTY_PROFILE);
+      setSavedProfile(EMPTY_PROFILE);
       setLoadingProfile(true);
+
       try {
         const nextProfile = await loadGameProfile(game, isLinux);
+        if (profileRequestRef.current !== requestId) return;
         setProfile(nextProfile);
         setSavedProfile(nextProfile);
       } catch (error) {
+        if (profileRequestRef.current !== requestId) return;
         console.error("[GameProfiles] Failed to load profile:", error);
+        setProfileError(error.message || t("featureCenters.profiles.loadProfileError"));
         toast.error(t("featureCenters.profiles.loadProfileError"), {
           description: error.message,
         });
       } finally {
-        setLoadingProfile(false);
+        if (profileRequestRef.current === requestId) {
+          setLoadingProfile(false);
+        }
       }
     },
     [isLinux, t]
   );
 
   useEffect(() => {
-    if (open && selectedGame) loadProfile(selectedGame);
+    if (!open || !selectedGame) {
+      profileRequestRef.current += 1;
+      setLoadingProfile(false);
+      setProfileError("");
+      setProfile(EMPTY_PROFILE);
+      setSavedProfile(EMPTY_PROFILE);
+      return undefined;
+    }
+
+    loadProfile(selectedGame);
+    return () => {
+      // Ignore a result that belongs to a game or dialog state that is no longer active.
+      profileRequestRef.current += 1;
+    };
   }, [open, selectedGame, loadProfile]);
 
   const confirmDiscard = useCallback(
@@ -168,10 +197,12 @@ const GameProfilesCenter = () => {
   const saveProfile = async () => {
     if (!selectedGame || !isDirty) return;
     const gameName = getGameName(selectedGame);
+    const savingKey = selectedGame.__profileKey;
     setSaving(true);
 
     try {
       const normalized = await saveGameProfile(selectedGame, profile, isLinux);
+      if (selectedKey !== savingKey) return;
       setProfile(normalized);
       setSavedProfile(normalized);
       toast.success(t("featureCenters.profiles.saved"), {
@@ -221,7 +252,7 @@ const GameProfilesCenter = () => {
                 <select
                   value={selectedKey}
                   onChange={event => selectGame(event.target.value)}
-                  disabled={loadingGames || games.length === 0}
+                  disabled={loadingGames || loadingProfile || saving || games.length === 0}
                   aria-label={t("featureCenters.profiles.title")}
                   className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
@@ -240,7 +271,11 @@ const GameProfilesCenter = () => {
                   </Badge>
                 )}
               </div>
-              <Button variant="outline" onClick={refreshCatalog} disabled={loadingGames}>
+              <Button
+                variant="outline"
+                onClick={refreshCatalog}
+                disabled={loadingGames || loadingProfile || saving}
+              >
                 <RefreshCw
                   className={`mr-2 h-4 w-4 ${loadingGames ? "animate-spin" : ""}`}
                 />
@@ -286,6 +321,16 @@ const GameProfilesCenter = () => {
               <FeatureState
                 icon={RefreshCw}
                 title={t("featureCenters.profiles.loading")}
+              />
+            ) : profileError ? (
+              <FeatureState
+                icon={AlertTriangle}
+                title={t("featureCenters.profiles.loadProfileError")}
+                description={profileError}
+                action={{
+                  label: t("featureCenters.common.retry"),
+                  onClick: () => loadProfile(selectedGame),
+                }}
               />
             ) : (
               <>

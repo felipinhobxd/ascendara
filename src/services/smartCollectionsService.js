@@ -9,6 +9,14 @@ export function normalizePlayTime(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+export function formatPlayTime(value) {
+  const seconds = normalizePlayTime(value);
+  if (seconds <= 0) return "";
+  if (seconds < 60) return "<1m";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h`;
+}
+
 export async function loadSmartCollectionLibrary() {
   const [installed, custom] = await Promise.all([
     window.electron.getGames(),

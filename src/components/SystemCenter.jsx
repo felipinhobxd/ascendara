@@ -67,6 +67,12 @@ const STATUS_META = {
   },
 };
 
+function getRecoveryReasonKey(reason) {
+  if (reason === "before-update") return "beforeUpdate";
+  if (String(reason || "").startsWith("before-rollback")) return "beforeRollback";
+  return "manual";
+}
+
 function HealthRow({ item, onAction, t }) {
   const meta = STATUS_META[item.status] || STATUS_META.info;
   const Icon = meta.icon;
@@ -202,9 +208,12 @@ const SystemCenter = () => {
 
       try {
         toast.info(t("featureCenters.system.toasts.dependenciesInstalling"));
-        await window.electron.installDependencies();
+        const result = await window.electron.installDependencies();
+        if (!result?.success) {
+          throw new Error(result?.message || "Dependency installation failed");
+        }
         toast.success(t("featureCenters.system.toasts.dependenciesDone"));
-        runHealthCheck();
+        await runHealthCheck();
       } catch (error) {
         toast.error(t("featureCenters.system.toasts.dependenciesFailed"), {
           description: error.message,
@@ -257,7 +266,10 @@ const SystemCenter = () => {
   const clearBrowserData = async () => {
     if (!window.confirm(t("featureCenters.system.recovery.clearBrowserDataConfirm"))) return;
     try {
-      await window.electron.clearCache();
+      const cleared = await window.electron.clearCache();
+      if (cleared !== true) {
+        throw new Error("Ascendara could not clear Chromium browser data");
+      }
       clearTransientUiState();
       window.location.reload();
     } catch (error) {
@@ -561,12 +573,7 @@ const SystemCenter = () => {
             >
               <div className="space-y-2">
                 {recoveryPoints.map(point => {
-                  const reasonKey =
-                    point.reason === "before-update"
-                      ? "beforeUpdate"
-                      : point.reason === "before-rollback"
-                        ? "beforeRollback"
-                        : "manual";
+                  const reasonKey = getRecoveryReasonKey(point.reason);
                   return (
                     <div
                       key={point.id}
@@ -641,8 +648,9 @@ const SystemCenter = () => {
               <Button
                 variant="outline"
                 onClick={async () => {
-                  const opened = await window.electron.openDevTools();
-                  if (!opened) {
+                  try {
+                    await window.electron.openDevTools();
+                  } catch {
                     toast.info(t("featureCenters.system.recovery.devToolsUnavailable"));
                   }
                 }}

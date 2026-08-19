@@ -19,14 +19,62 @@ function toolIsInstalled(value) {
   );
 }
 
+function getWindowsVolumeKey(directory) {
+  const value = String(directory || "")
+    .trim()
+    .replace(/\//g, "\\");
+
+  const drive = value.match(/^([a-zA-Z]:)(?:\\|$)/);
+  if (drive) return drive[1].toUpperCase();
+
+  const unc = value.match(/^\\\\([^\\]+)\\([^\\]+)/);
+  if (unc) return `\\\\${unc[1].toLocaleLowerCase()}\\${unc[2].toLocaleLowerCase()}`;
+
+  return null;
+}
+
+function normalizeDriveTotals(driveSpace, isWindows) {
+  const directories = Array.isArray(driveSpace?.directories) ? driveSpace.directories : [];
+  if (!isWindows || directories.length < 2) return driveSpace;
+
+  const volumes = new Map();
+  for (const directory of directories) {
+    const key = getWindowsVolumeKey(directory.path);
+    if (!key) {
+      // If a path cannot be mapped to a Windows volume, keep the upstream totals
+      // rather than guessing whether two unrelated locations share a device.
+      return driveSpace;
+    }
+    if (!volumes.has(key)) volumes.set(key, directory);
+  }
+
+  let freeSpace = 0;
+  let totalSpace = 0;
+  for (const directory of volumes.values()) {
+    freeSpace += Number(directory.freeSpace) || 0;
+    totalSpace += Number(directory.totalSpace) || 0;
+  }
+
+  return {
+    ...driveSpace,
+    freeSpace,
+    totalSpace,
+  };
+}
+
 export async function loadStorageSnapshot() {
   const downloadDirectory = await window.electron.getDownloadDirectory();
-  const [driveSpace, gamesSize] = await Promise.all([
+  const [driveSpace, gamesSize, isWindows] = await Promise.all([
     window.electron.getDriveSpace(downloadDirectory),
     window.electron.getInstalledGamesSize(),
+    window.electron.isOnWindows(),
   ]);
 
-  return { downloadDirectory, driveSpace, gamesSize };
+  return {
+    downloadDirectory,
+    driveSpace: normalizeDriveTotals(driveSpace, Boolean(isWindows)),
+    gamesSize,
+  };
 }
 
 export async function inspectSystemHealth(t) {
@@ -74,7 +122,12 @@ export async function inspectSystemHealth(t) {
         window.electron.canCreateFiles(downloadDirectory),
         window.electron.getDriveSpace(downloadDirectory),
       ]);
-      const freeSpace = Number(driveSpace?.freeSpace) || 0;
+      const primaryDriveSpace = driveSpace?.directories?.find(
+        directory => directory.path === downloadDirectory
+      );
+      const fallbackDriveSpace = normalizeDriveTotals(driveSpace, Boolean(isWindows));
+      const freeSpace =
+        Number(primaryDriveSpace?.freeSpace ?? fallbackDriveSpace?.freeSpace) || 0;
 
       items.push({
         id: "download-directory",

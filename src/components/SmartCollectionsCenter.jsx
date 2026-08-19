@@ -21,9 +21,9 @@ import { useFeatureCenterDialog } from "@/hooks/useFeatureCenterDialog";
 import { FEATURE_CENTER_EVENTS } from "@/lib/featureCenterEvents";
 import {
   buildSmartCollections,
+  formatPlayTime,
   getLibraryGameName,
   loadSmartCollectionLibrary,
-  normalizePlayTime,
 } from "@/services/smartCollectionsService";
 
 const COLLECTION_ALIASES = {
@@ -195,6 +195,7 @@ const SmartCollectionsCenter = () => {
                   {filteredGames.map(game => {
                     const gameName = getLibraryGameName(game);
                     const recent = recentByName.get(gameName);
+                    const playTime = formatPlayTime(game.playTime);
                     return (
                       <button
                         key={`${game.isCustom ? "custom" : "installed"}:${gameName}`}
@@ -212,10 +213,10 @@ const SmartCollectionsCenter = () => {
                                   {t("featureCenters.collections.customBadge")}
                                 </Badge>
                               )}
-                              {normalizePlayTime(game.playTime) > 0 && (
+                              {playTime && (
                                 <span>
                                   {t("featureCenters.collections.playtime", {
-                                    value: normalizePlayTime(game.playTime),
+                                    value: playTime,
                                   })}
                                 </span>
                               )}
