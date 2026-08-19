@@ -9,6 +9,10 @@ const APP_ORIGINS = new Set([
   "http://127.0.0.1:46859",
 ]);
 
+// ipcMain is a singleton in Electron, but keeping this as a WeakSet makes the guard
+// safe to call from startup code more than once without wrapping handlers repeatedly.
+const guardedIpcMainInstances = new WeakSet();
+
 function parseHttpUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
@@ -49,6 +53,83 @@ function isAllowedAppNavigation(rawUrl) {
 }
 
 /**
+ * Prefer the frame URL because an iframe can share the same WebContents as the main
+ * page. Falling back to sender.getURL() keeps this compatible with older event shapes.
+ */
+function getIpcSenderUrl(event) {
+  if (typeof event?.senderFrame?.url === "string" && event.senderFrame.url) {
+    return event.senderFrame.url;
+  }
+
+  try {
+    return event?.sender?.getURL?.() || "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Privileged IPC is only valid from Ascendara's own local renderer. This check is
+ * deliberately independent of the channel so a newly added handler is protected by
+ * default instead of relying on every feature author remembering to add a guard.
+ */
+function isTrustedIpcSender(event) {
+  return isAllowedAppNavigation(getIpcSenderUrl(event));
+}
+
+function createTrustedIpcListener(channel, listener, onBlocked) {
+  if (typeof listener !== "function") {
+    throw new TypeError(`IPC handler for "${channel}" must be a function`);
+  }
+
+  return (event, ...args) => {
+    if (!isTrustedIpcSender(event)) {
+      const senderUrl = getIpcSenderUrl(event) || "unknown";
+      const error = new Error(`Blocked IPC channel "${channel}" from an untrusted renderer`);
+
+      if (typeof onBlocked === "function") {
+        onBlocked({ channel, senderUrl, error });
+      } else {
+        console.warn(`[Security] ${error.message}: ${senderUrl}`);
+      }
+
+      throw error;
+    }
+
+    return listener(event, ...args);
+  };
+}
+
+/**
+ * Wrap Electron's handle APIs once, before feature modules register their channels.
+ * Centralizing this here means old and future handlers get sender validation without
+ * a risky all-at-once rewrite of every IPC module.
+ */
+function installIpcMainGuard(ipcMain, options = {}) {
+  if (!ipcMain || typeof ipcMain.handle !== "function") {
+    throw new TypeError("A valid Electron ipcMain instance is required");
+  }
+
+  if (guardedIpcMainInstances.has(ipcMain)) return ipcMain;
+
+  const originalHandle = ipcMain.handle.bind(ipcMain);
+  ipcMain.handle = (channel, listener) =>
+    originalHandle(channel, createTrustedIpcListener(channel, listener, options.onBlocked));
+
+  if (typeof ipcMain.handleOnce === "function") {
+    const originalHandleOnce = ipcMain.handleOnce.bind(ipcMain);
+    ipcMain.handleOnce = (channel, listener) =>
+      originalHandleOnce(
+        channel,
+        createTrustedIpcListener(channel, listener, options.onBlocked)
+      );
+  }
+
+  guardedIpcMainInstances.add(ipcMain);
+  return ipcMain;
+}
+
+/**
  * IPC callers sometimes provide a filename. Resolve it once and make sure it did
  * not climb out of the directory we intended to expose before touching the disk.
  */
@@ -85,9 +166,13 @@ function escapeHtml(value) {
 }
 
 module.exports = {
+  createTrustedIpcListener,
   escapeHtml,
+  getIpcSenderUrl,
+  installIpcMainGuard,
   isAllowedAppNavigation,
   isSafeExternalUrl,
   isTrustedAuthUrl,
+  isTrustedIpcSender,
   resolveInsideDirectory,
 };
