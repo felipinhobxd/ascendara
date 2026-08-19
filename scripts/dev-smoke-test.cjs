@@ -277,10 +277,10 @@ async function main() {
     [
       "-a",
       electronBinary,
-      "./electron/app.js",
       "--no-sandbox",
       `--remote-debugging-port=${DEBUG_PORT}`,
       `--remote-debugging-address=${DEV_HOST}`,
+      "./electron/app.js",
     ],
     "electron"
   );
