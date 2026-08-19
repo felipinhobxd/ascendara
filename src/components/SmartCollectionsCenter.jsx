@@ -1,251 +1,250 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Clock3, Gamepad2, Layers3, RefreshCw, Sparkles } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import {
+  AlertTriangle,
+  Clock3,
+  Gamepad2,
+  Layers3,
+  RefreshCw,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import recentGamesService from "@/services/recentGamesService";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  FeatureCenterDialog,
+  FeatureState,
+} from "@/components/feature-centers/FeatureCenterPrimitives";
+import { useLanguage } from "@/context/LanguageContext";
+import { useFeatureCenterDialog } from "@/hooks/useFeatureCenterDialog";
+import { FEATURE_CENTER_EVENTS } from "@/lib/featureCenterEvents";
+import {
+  buildSmartCollections,
+  getLibraryGameName,
+  loadSmartCollectionLibrary,
+  normalizePlayTime,
+} from "@/services/smartCollectionsService";
 
-const SMART_COLLECTIONS_EVENT = "ascendara:open-smart-collections";
-
-function getGameName(game) {
-  return game?.game || game?.name || "Unknown Game";
-}
-
-function normalizePlayTime(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : 0;
-}
+const COLLECTION_ALIASES = {
+  "never-played": "neverPlayed",
+};
 
 const SmartCollectionsCenter = () => {
+  const { t, language } = useLanguage();
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
   const [games, setGames] = useState([]);
   const [recentGames, setRecentGames] = useState([]);
   const [selectedCollection, setSelectedCollection] = useState("continue");
+  const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
-  useEffect(() => {
-    const handleOpen = event => {
-      setOpen(true);
-      if (event?.detail?.collection) setSelectedCollection(event.detail.collection);
-    };
-    window.addEventListener(SMART_COLLECTIONS_EVENT, handleOpen);
-    return () => window.removeEventListener(SMART_COLLECTIONS_EVENT, handleOpen);
+  const handleOpenEvent = useCallback(detail => {
+    if (!detail?.collection) return;
+    setSelectedCollection(COLLECTION_ALIASES[detail.collection] || detail.collection);
   }, []);
+  const [open, setOpen] = useFeatureCenterDialog(
+    FEATURE_CENTER_EVENTS.collections,
+    handleOpenEvent
+  );
 
   const loadGames = useCallback(async () => {
     setLoading(true);
+    setLoadError("");
     try {
-      const [installed, custom] = await Promise.all([
-        window.electron.getGames(),
-        window.electron.getCustomGames(),
-      ]);
-
-      const normalized = [
-        ...(Array.isArray(installed)
-          ? installed.map(game => ({ ...game, isCustom: false }))
-          : []),
-        ...(Array.isArray(custom)
-          ? custom.map(game => ({
-              ...game,
-              name: game.game || game.name,
-              game: game.game || game.name,
-              isCustom: true,
-              custom: true,
-            }))
-          : []),
-      ];
-
-      const seen = new Set();
-      setGames(
-        normalized.filter(game => {
-          const key = `${game.isCustom ? "custom" : "installed"}:${getGameName(game)}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        })
-      );
-      setRecentGames(recentGamesService.getRecentGames());
+      const library = await loadSmartCollectionLibrary();
+      setGames(library.games);
+      setRecentGames(library.recentGames);
+    } catch (error) {
+      console.error("[SmartCollections] Failed to load library:", error);
+      setLoadError(error.message || t("featureCenters.collections.loadError"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (open) loadGames();
   }, [open, loadGames]);
 
-  const recentByName = useMemo(() => {
-    const map = new Map();
-    recentGames.forEach(game => map.set(getGameName(game), game));
-    return map;
-  }, [recentGames]);
+  useEffect(() => {
+    setFilter("");
+  }, [selectedCollection]);
 
-  const collections = useMemo(() => {
-    const continuePlaying = recentGames
-      .map(recent => games.find(game => getGameName(game) === getGameName(recent)))
-      .filter(Boolean);
-
-    return [
-      {
-        id: "continue",
-        label: "Continue Playing",
-        description: "Games Ascendara has seen you launch most recently.",
-        games: continuePlaying,
-      },
-      {
-        id: "never-played",
-        label: "Never Played",
-        description: "Installed games with no recorded playtime or recent launch.",
-        games: games.filter(
-          game => normalizePlayTime(game.playTime) <= 0 && !recentByName.has(getGameName(game))
-        ),
-      },
-      {
-        id: "played",
-        label: "Played",
-        description: "Games with recorded playtime or a recent launch.",
-        games: games.filter(
-          game => normalizePlayTime(game.playTime) > 0 || recentByName.has(getGameName(game))
-        ),
-      },
-      {
-        id: "custom",
-        label: "Custom Games",
-        description: "Games added manually to your Ascendara library.",
-        games: games.filter(game => game.isCustom),
-      },
-      {
-        id: "online",
-        label: "Online",
-        description: "Installed games marked with online support.",
-        games: games.filter(game => Boolean(game.online)),
-      },
-      {
-        id: "vr",
-        label: "VR",
-        description: "Installed games marked for VR.",
-        games: games.filter(game => Boolean(game.isVr)),
-      },
-      {
-        id: "dlc",
-        label: "DLC",
-        description: "Installed entries marked as DLC content.",
-        games: games.filter(game => Boolean(game.dlc)),
-      },
-    ];
-  }, [games, recentGames, recentByName]);
+  const { collections, recentByName } = useMemo(
+    () => buildSmartCollections(games, recentGames),
+    [games, recentGames]
+  );
 
   const activeCollection =
     collections.find(collection => collection.id === selectedCollection) || collections[0];
 
+  const filteredGames = useMemo(() => {
+    const query = filter.trim().toLocaleLowerCase();
+    if (!query) return activeCollection?.games || [];
+    return (activeCollection?.games || []).filter(game =>
+      getLibraryGameName(game).toLocaleLowerCase().includes(query)
+    );
+  }, [activeCollection, filter]);
+
   const openGame = game => {
     setOpen(false);
-    // This matches Ascendara's existing library search behavior exactly, so GameScreen
-    // receives the same object shape regardless of whether the game came from Library,
-    // Ctrl+K, or a Smart Collection.
+    // Use the same route state as Library search so GameScreen receives the official shape.
     navigate("/gamescreen", {
       state: { gameData: game },
     });
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-h-[86vh] max-w-5xl overflow-hidden p-0">
-        <DialogHeader className="border-b border-border px-6 py-5">
-          <DialogTitle className="flex items-center gap-2 text-xl">
-            <Sparkles className="h-6 w-6 text-primary" /> Smart Collections
-          </DialogTitle>
-        </DialogHeader>
+    <FeatureCenterDialog
+      open={open}
+      onOpenChange={setOpen}
+      title={t("featureCenters.collections.title")}
+      description={t("featureCenters.collections.description")}
+      icon={Sparkles}
+    >
+      <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[230px_minmax(0,1fr)]">
+        <aside className="flex shrink-0 gap-2 overflow-x-auto border-b border-border bg-muted/20 p-2 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3">
+          <Button
+            variant="outline"
+            className="shrink-0 justify-start md:mb-1 md:w-full"
+            onClick={loadGames}
+            disabled={loading}
+          >
+            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            {t("featureCenters.collections.refresh")}
+          </Button>
 
-        <div className="grid min-h-[560px] grid-cols-[230px_1fr]">
-          <aside className="space-y-2 overflow-y-auto border-r border-border bg-muted/20 p-3">
-            <Button
-              variant="outline"
-              className="mb-2 w-full justify-start"
-              onClick={loadGames}
-              disabled={loading}
-            >
-              <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-              Refresh library
-            </Button>
-            {collections.map(collection => (
+          {collections.map(collection => {
+            const label = t(
+              `featureCenters.collections.collections.${collection.id}.label`
+            );
+            const active = selectedCollection === collection.id;
+            return (
               <button
                 key={collection.id}
+                type="button"
+                aria-pressed={active}
                 onClick={() => setSelectedCollection(collection.id)}
-                className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
-                  selectedCollection === collection.id
+                className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors md:w-full ${
+                  active
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">{collection.label}</span>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {collection.games.length}
-                  </Badge>
-                </div>
+                <span className="whitespace-nowrap md:min-w-0 md:flex-1 md:truncate">
+                  {label}
+                </span>
+                <Badge variant="secondary" className="text-[10px]">
+                  {collection.games.length}
+                </Badge>
               </button>
-            ))}
-          </aside>
+            );
+          })}
+        </aside>
 
-          <section className="overflow-y-auto p-6">
-            <div className="mb-5 flex items-start justify-between gap-4">
-              <div>
-                <h2 className="flex items-center gap-2 text-xl font-semibold text-foreground">
-                  <Layers3 className="h-5 w-5 text-primary" /> {activeCollection?.label}
-                </h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {activeCollection?.description}
-                </p>
+        <section className="min-h-0 overflow-y-auto p-4 sm:p-6">
+          {loadError ? (
+            <FeatureState
+              icon={AlertTriangle}
+              title={t("featureCenters.collections.loadError")}
+              description={loadError}
+              action={{
+                label: t("featureCenters.collections.retry"),
+                onClick: loadGames,
+              }}
+            />
+          ) : loading && games.length === 0 ? (
+            <FeatureState icon={RefreshCw} title={t("featureCenters.common.loading")} />
+          ) : (
+            <div className="space-y-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <h2 className="flex items-center gap-2 text-xl font-semibold text-foreground">
+                    <Layers3 className="h-5 w-5 shrink-0 text-primary" />
+                    {t(
+                      `featureCenters.collections.collections.${activeCollection?.id}.label`
+                    )}
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {t(
+                      `featureCenters.collections.collections.${activeCollection?.id}.description`
+                    )}
+                  </p>
+                </div>
+                <Badge variant="outline" className="self-start">
+                  {t("featureCenters.collections.count", {
+                    count: activeCollection?.games.length || 0,
+                  })}
+                </Badge>
               </div>
-              <Badge variant="outline">{activeCollection?.games.length || 0} games</Badge>
-            </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
-              {activeCollection?.games.map(game => {
-                const recent = recentByName.get(getGameName(game));
-                return (
-                  <button
-                    key={`${game.isCustom ? "custom" : "installed"}:${getGameName(game)}`}
-                    onClick={() => openGame(game)}
-                    className="rounded-xl border border-border bg-card/60 p-4 text-left transition-colors hover:bg-accent/50"
-                  >
-                    <div className="flex items-start gap-3">
-                      <Gamepad2 className="mt-0.5 h-5 w-5 flex-shrink-0 text-primary" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium text-foreground">{getGameName(game)}</p>
-                        <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                          {game.isCustom && <Badge variant="outline">Custom</Badge>}
-                          {normalizePlayTime(game.playTime) > 0 && (
-                            <span>{normalizePlayTime(game.playTime)} playtime</span>
-                          )}
-                          {recent?.lastPlayed && (
-                            <span className="flex items-center gap-1">
-                              <Clock3 className="h-3 w-3" />
-                              {new Date(recent.lastPlayed).toLocaleDateString()}
-                            </span>
-                          )}
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={filter}
+                  onChange={event => setFilter(event.target.value)}
+                  placeholder={t("featureCenters.collections.searchPlaceholder")}
+                  className="pl-9"
+                />
+              </div>
+
+              {filteredGames.length > 0 ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {filteredGames.map(game => {
+                    const gameName = getLibraryGameName(game);
+                    const recent = recentByName.get(gameName);
+                    return (
+                      <button
+                        key={`${game.isCustom ? "custom" : "installed"}:${gameName}`}
+                        type="button"
+                        onClick={() => openGame(game)}
+                        className="rounded-xl border border-border bg-card/60 p-4 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <div className="flex items-start gap-3">
+                          <Gamepad2 className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-medium text-foreground">{gameName}</p>
+                            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                              {game.isCustom && (
+                                <Badge variant="outline">
+                                  {t("featureCenters.collections.customBadge")}
+                                </Badge>
+                              )}
+                              {normalizePlayTime(game.playTime) > 0 && (
+                                <span>
+                                  {t("featureCenters.collections.playtime", {
+                                    value: normalizePlayTime(game.playTime),
+                                  })}
+                                </span>
+                              )}
+                              {recent?.lastPlayed && (
+                                <span className="flex items-center gap-1">
+                                  <Clock3 className="h-3 w-3" />
+                                  {new Date(recent.lastPlayed).toLocaleDateString(language)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <FeatureState
+                  compact
+                  icon={Gamepad2}
+                  title={t("featureCenters.collections.noMatches")}
+                />
+              )}
             </div>
-
-            {!loading && (activeCollection?.games.length || 0) === 0 && (
-              <div className="rounded-xl border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
-                No games currently match this collection.
-              </div>
-            )}
-          </section>
-        </div>
-      </DialogContent>
-    </Dialog>
+          )}
+        </section>
+      </div>
+    </FeatureCenterDialog>
   );
 };
 
-export { SMART_COLLECTIONS_EVENT };
 export default SmartCollectionsCenter;
