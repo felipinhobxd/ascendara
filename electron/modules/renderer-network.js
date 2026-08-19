@@ -1,6 +1,4 @@
-const dns = require("dns").promises;
 const https = require("https");
-const net = require("net");
 
 const ALLOWED_SERVICE_HOSTS = new Set([
   "monitor.ascendara.app",
@@ -9,15 +7,10 @@ const ALLOWED_SERVICE_HOSTS = new Set([
   "lfs.ascendara.app",
   "r2.ascendara.app",
 ]);
-const ALLOWED_METHODS = new Set(["GET", "HEAD"]);
-const MAX_RESPONSE_BYTES = 1024 * 1024;
-const MIN_TIMEOUT_MS = 1000;
-const MAX_TIMEOUT_MS = 15000;
-
-const CUSTOM_SOURCE_MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
-const CUSTOM_SOURCE_MAX_REDIRECTS = 4;
-const CUSTOM_SOURCE_TIMEOUT_MS = 30000;
-const BLOCKED_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".lan", ".home"];
+const ALLOWED_SERVICE_METHODS = new Set(["GET", "HEAD"]);
+const MAX_SERVICE_RESPONSE_BYTES = 1024 * 1024;
+const MIN_SERVICE_TIMEOUT_MS = 1000;
+const MAX_SERVICE_TIMEOUT_MS = 15000;
 
 function normalizeServiceRequest(rawUrl, options = {}) {
   let parsedUrl;
@@ -31,8 +24,8 @@ function normalizeServiceRequest(rawUrl, options = {}) {
     throw new Error(`Service request host is not allowed: ${parsedUrl.hostname || "unknown"}`);
   }
 
-  // This bridge exists for five root health checks, not for arbitrary requests to an
-  // otherwise trusted domain. Restricting the route makes that distinction enforceable.
+  // This channel is only for Ascendara's root health checks. Keeping it narrow makes
+  // status polling predictable without changing the separate External Sources behavior.
   if (
     parsedUrl.username ||
     parsedUrl.password ||
@@ -45,17 +38,15 @@ function normalizeServiceRequest(rawUrl, options = {}) {
   }
 
   const method = String(options.method || "GET").toUpperCase();
-  if (!ALLOWED_METHODS.has(method)) {
+  if (!ALLOWED_SERVICE_METHODS.has(method)) {
     throw new Error(`Service request method is not allowed: ${method}`);
   }
 
   const requestedTimeout = Number(options.timeout);
   const timeout = Number.isFinite(requestedTimeout)
-    ? Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, requestedTimeout))
+    ? Math.min(MAX_SERVICE_TIMEOUT_MS, Math.max(MIN_SERVICE_TIMEOUT_MS, requestedTimeout))
     : 5000;
 
-  // The status checker only needs these two headers. Copying arbitrary renderer
-  // headers would make this endpoint much more general than its purpose requires.
   const headers = {};
   if (typeof options.headers?.Accept === "string") {
     headers.Accept = options.headers.Accept.slice(0, 256);
@@ -84,7 +75,7 @@ function requestAscendaraService(rawUrl, options = {}) {
 
         response.on("data", chunk => {
           totalBytes += chunk.length;
-          if (totalBytes > MAX_RESPONSE_BYTES) {
+          if (totalBytes > MAX_SERVICE_RESPONSE_BYTES) {
             request.destroy(new Error("Service response exceeded the 1 MB safety limit"));
             return;
           }
@@ -110,245 +101,91 @@ function requestAscendaraService(rawUrl, options = {}) {
   });
 }
 
-function isPublicIpAddress(address) {
-  const family = net.isIP(address);
-  if (family === 0) return false;
-
-  if (family === 4) {
-    const octets = address.split(".").map(Number);
-    const [a, b, c] = octets;
-
-    if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
-    if (a === 100 && b >= 64 && b <= 127) return false;
-    if (a === 169 && b === 254) return false;
-    if (a === 172 && b >= 16 && b <= 31) return false;
-    if (a === 192 && b === 0 && c === 0) return false;
-    if (a === 192 && b === 0 && c === 2) return false;
-    if (a === 192 && b === 168) return false;
-    if (a === 198 && (b === 18 || b === 19)) return false;
-    if (a === 198 && b === 51 && c === 100) return false;
-    if (a === 203 && b === 0 && c === 113) return false;
-    return true;
-  }
-
-  const normalized = address.toLowerCase().split("%")[0];
-
-  // IPv4-mapped addresses are intentionally rejected rather than decoded here. Custom
-  // sources have no reason to require them, and treating them as a special case avoids
-  // accidentally bypassing the IPv4 private-range checks above.
-  if (normalized.startsWith("::ffff:")) return false;
-  if (normalized === "::" || normalized === "::1") return false;
-  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return false;
-  if (/^fe[89ab]/.test(normalized)) return false;
-  if (normalized.startsWith("ff")) return false;
-  if (normalized.startsWith("2001:db8")) return false;
-  return true;
-}
-
-function getUrlHostname(parsedUrl) {
-  const hostname = parsedUrl.hostname.toLowerCase();
-  // WHATWG URL keeps brackets around IPv6 literals in `hostname`. net.isIP and DNS
-  // expect the bare address, so normalize it once before applying SSRF rules.
-  if (hostname.startsWith("[") && hostname.endsWith("]")) {
-    return hostname.slice(1, -1);
-  }
-  return hostname;
-}
-
-function normalizeCustomSourceUrl(rawUrl) {
+function normalizeExternalRequest(rawUrl, options = {}) {
   let parsedUrl;
   try {
     parsedUrl = new URL(rawUrl);
   } catch {
-    throw new TypeError("Custom source URL must be a valid URL");
+    throw new TypeError("External request URL must be a valid URL");
   }
 
+  // The upstream preload used Node's https.request directly, so HTTPS is the actual
+  // compatibility boundary. Do not add host, port, or response-size restrictions here:
+  // External Sources are user-provided and can be very large or self-hosted.
   if (parsedUrl.protocol !== "https:") {
-    throw new Error("Custom sources must use HTTPS");
-  }
-  if (parsedUrl.username || parsedUrl.password) {
-    throw new Error("Custom source URLs cannot contain credentials");
-  }
-  if (parsedUrl.port && parsedUrl.port !== "443") {
-    throw new Error("Custom sources must use the standard HTTPS port");
+    throw new Error("External requests must use HTTPS");
   }
 
-  const hostname = getUrlHostname(parsedUrl);
-  if (
-    hostname === "localhost" ||
-    BLOCKED_HOST_SUFFIXES.some(suffix => hostname.endsWith(suffix))
-  ) {
-    throw new Error("Custom source host is not public");
-  }
+  const method = typeof options.method === "string" ? options.method.toUpperCase() : "GET";
+  const headers =
+    options.headers && typeof options.headers === "object" && !Array.isArray(options.headers)
+      ? { ...options.headers }
+      : {};
+  const timeout = Number.isFinite(Number(options.timeout)) ? Number(options.timeout) : undefined;
 
-  if (net.isIP(hostname) && !isPublicIpAddress(hostname)) {
-    throw new Error("Custom source IP address is not public");
-  }
-
-  // Fragments never reach the server and can make two visually different settings hit
-  // the same resource. Dropping them keeps the persisted source URL deterministic.
-  parsedUrl.hash = "";
-  return parsedUrl;
+  return { parsedUrl, method, headers, timeout };
 }
 
-async function resolvePublicCustomSourceTarget(parsedUrl) {
-  const hostname = getUrlHostname(parsedUrl);
-
-  if (net.isIP(hostname)) {
-    if (!isPublicIpAddress(hostname)) {
-      throw new Error("Custom source IP address is not public");
-    }
-    return {
-      address: hostname,
-      family: net.isIP(hostname),
-    };
-  }
-
-  const addresses = await dns.lookup(hostname, {
-    all: true,
-    verbatim: true,
-  });
-
-  if (!addresses.length) {
-    throw new Error("Custom source hostname did not resolve");
-  }
-
-  // Reject the whole hostname if DNS exposes any private target. Picking only a public
-  // answer is not enough because a later lookup could choose a different address.
-  const blockedAddress = addresses.find(result => !isPublicIpAddress(result.address));
-  if (blockedAddress) {
-    throw new Error("Custom source hostname resolves to a non-public address");
-  }
-
-  return addresses[0];
-}
-
-function createPinnedLookup(target) {
-  return (_hostname, _options, callback) => {
-    callback(null, target.address, target.family);
-  };
-}
-
-async function requestCustomSource(rawUrl, redirectCount = 0) {
-  const parsedUrl = normalizeCustomSourceUrl(rawUrl);
-  const target = await resolvePublicCustomSourceTarget(parsedUrl);
+function requestExternalResource(rawUrl, options = {}) {
+  const { parsedUrl, method, headers, timeout } = normalizeExternalRequest(rawUrl, options);
 
   return new Promise((resolve, reject) => {
     const request = https.request(
       parsedUrl,
       {
-        method: "GET",
-        timeout: CUSTOM_SOURCE_TIMEOUT_MS,
-        lookup: createPinnedLookup(target),
-        headers: {
-          Accept: "application/json, text/plain;q=0.9, */*;q=0.1",
-          "User-Agent": "Ascendara/CustomSource",
-          Referer: "https://ascendara.app/",
-        },
+        method,
+        headers,
+        ...(timeout === undefined ? {} : { timeout }),
       },
       response => {
-        const status = response.statusCode || 0;
-        const location = response.headers.location;
+        let data = "";
 
-        if ([301, 302, 303, 307, 308].includes(status) && location) {
-          response.resume();
-          if (redirectCount >= CUSTOM_SOURCE_MAX_REDIRECTS) {
-            reject(new Error("Custom source exceeded the redirect limit"));
-            return;
-          }
-
-          let redirectUrl;
-          try {
-            redirectUrl = new URL(location, parsedUrl).toString();
-          } catch {
-            reject(new Error("Custom source returned an invalid redirect URL"));
-            return;
-          }
-
-          // Every redirect goes through the same URL and DNS checks. This matters for
-          // public URLs that try to bounce the main process toward localhost or metadata.
-          requestCustomSource(redirectUrl, redirectCount + 1).then(resolve, reject);
-          return;
-        }
-
-        const advertisedLength = Number(response.headers["content-length"] || 0);
-        if (
-          Number.isFinite(advertisedLength) &&
-          advertisedLength > CUSTOM_SOURCE_MAX_RESPONSE_BYTES
-        ) {
-          response.resume();
-          reject(new Error("Custom source response exceeds the 20 MB safety limit"));
-          return;
-        }
-
-        const chunks = [];
-        let totalBytes = 0;
-        let exceededLimit = false;
-
+        // This intentionally mirrors the official preload helper instead of imposing a
+        // small cap. Some Hydra-compatible External Sources contain hundreds of thousands
+        // of entries, so an arbitrary launcher-side limit would be a compatibility bug.
+        response.setEncoding("utf8");
         response.on("data", chunk => {
-          if (exceededLimit) return;
-          totalBytes += chunk.length;
-          if (totalBytes > CUSTOM_SOURCE_MAX_RESPONSE_BYTES) {
-            exceededLimit = true;
-            request.destroy(new Error("Custom source response exceeds the 20 MB safety limit"));
-            return;
-          }
-          chunks.push(chunk);
+          data += chunk;
         });
-
         response.on("end", () => {
-          if (exceededLimit) return;
           resolve({
-            ok: status >= 200 && status < 300,
-            status,
-            statusCode: status,
-            data: Buffer.concat(chunks).toString("utf8"),
-            finalUrl: parsedUrl.toString(),
+            ok: response.statusCode >= 200 && response.statusCode < 300,
+            status: response.statusCode || 0,
+            statusCode: response.statusCode || 0,
+            data,
           });
         });
       }
     );
 
     request.on("timeout", () => {
-      request.destroy(new Error("Custom source request timed out"));
+      request.destroy();
+      reject(new Error("Request timed out"));
     });
     request.on("error", reject);
     request.end();
   });
 }
 
-function isAscendaraServiceHost(rawUrl) {
-  try {
-    return ALLOWED_SERVICE_HOSTS.has(new URL(rawUrl).hostname);
-  } catch {
-    return false;
-  }
-}
-
 function registerRendererNetworkHandlers(ipcMain) {
-  // `request-ascendara-service` is still used by one older Custom Sources caller. Keep
-  // that compatibility route safe by sending non-Ascendara hosts through the exact same
-  // public-HTTPS/SSRF checks as the dedicated custom-source channel. Official service
-  // hosts still use the much narrower root-only health-check policy.
-  ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) => {
-    if (isAscendaraServiceHost(rawUrl)) {
-      return requestAscendaraService(rawUrl, options);
-    }
-    return requestCustomSource(rawUrl);
-  });
-
-  // New code should use this channel directly. Once gameService is split into smaller
-  // modules, the temporary compatibility branch above can be deleted cleanly.
-  ipcMain.handle("fetch-custom-source", (_event, rawUrl) => requestCustomSource(rawUrl));
+  // Ascendara-owned status checks use the narrow channel above. External Sources keep a
+  // separate compatibility path so hardening one feature cannot silently break another.
+  ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) =>
+    requestAscendaraService(rawUrl, options)
+  );
+  ipcMain.handle("request-external-resource", (_event, rawUrl, options) =>
+    requestExternalResource(rawUrl, options)
+  );
+  ipcMain.handle("fetch-custom-source", (_event, rawUrl) =>
+    requestExternalResource(rawUrl, { method: "GET" })
+  );
 }
 
 module.exports = {
   ALLOWED_SERVICE_HOSTS,
-  isPublicIpAddress,
-  normalizeCustomSourceUrl,
+  normalizeExternalRequest,
   normalizeServiceRequest,
   registerRendererNetworkHandlers,
   requestAscendaraService,
-  requestCustomSource,
-  resolvePublicCustomSourceTarget,
+  requestExternalResource,
 };
