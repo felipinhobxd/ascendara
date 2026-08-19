@@ -8,6 +8,10 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  statuses: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,6 +19,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Mark developer build pending
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data '{"state":"pending","context":"ascendara/developer-build","description":"Developer validation is running"}'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -65,3 +82,35 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           yarn buildwithelectron
+
+      # The connector can read commit statuses even when workflow-run discovery is not
+      # available. Publishing one result here makes every direct-main change verifiable
+      # without weakening or skipping any of the build steps above.
+      - name: Publish developer build result
+        if: always() && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          case "${JOB_STATUS}" in
+            success)
+              STATE="success"
+              DESCRIPTION="Developer validation passed"
+              ;;
+            failure)
+              STATE="failure"
+              DESCRIPTION="Developer validation failed"
+              ;;
+            *)
+              STATE="error"
+              DESCRIPTION="Developer validation did not complete"
+              ;;
+          esac
+
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data "{\"state\":\"${STATE}\",\"context\":\"ascendara/developer-build\",\"description\":\"${DESCRIPTION}\"}"
