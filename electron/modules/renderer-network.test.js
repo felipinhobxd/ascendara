@@ -109,6 +109,10 @@ test("custom sources require normal public HTTPS URLs", () => {
     () => normalizeCustomSourceUrl("https://catalog.internal/list.json"),
     /host is not public/
   );
+  assert.throws(
+    () => normalizeCustomSourceUrl("https://[::1]/list.json"),
+    /IP address is not public/
+  );
 });
 
 test("custom source SSRF checks reject private and reserved IPv4 targets", () => {
@@ -131,7 +135,16 @@ test("custom source SSRF checks reject private and reserved IPv4 targets", () =>
 });
 
 test("custom source SSRF checks reject local IPv6 targets", () => {
-  for (const address of ["::", "::1", "::ffff:127.0.0.1", "fc00::1", "fd00::1", "fe80::1", "ff02::1", "2001:db8::1"]) {
+  for (const address of [
+    "::",
+    "::1",
+    "::ffff:127.0.0.1",
+    "fc00::1",
+    "fd00::1",
+    "fe80::1",
+    "ff02::1",
+    "2001:db8::1",
+  ]) {
     assert.equal(isPublicIpAddress(address), false, address);
   }
 
