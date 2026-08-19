@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 const SYSTEM_CENTER_EVENT = "ascendara:open-system-center";
 const GAME_PROFILES_EVENT = "ascendara:open-game-profiles";
+const SMART_COLLECTIONS_EVENT = "ascendara:open-smart-collections";
 
 const openSystemCenter = tab => {
   window.dispatchEvent(
@@ -61,6 +62,14 @@ export const useGlobalSearch = () => {
         description: "Launch commands, backups, UMU and custom save paths per game",
         badge: "Games",
         onSelect: () => window.dispatchEvent(new CustomEvent(GAME_PROFILES_EVENT)),
+      },
+      {
+        id: "smart-collections",
+        type: "commands",
+        label: "Open Smart Collections",
+        description: "Continue Playing, Never Played, Custom, Online, VR and DLC groups",
+        badge: "Library",
+        onSelect: () => window.dispatchEvent(new CustomEvent(SMART_COLLECTIONS_EVENT)),
       },
       {
         id: "big-picture",
