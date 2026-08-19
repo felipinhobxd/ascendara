@@ -8,7 +8,7 @@
     "url": "git+https://github.com/Ascendara/ascendara.git",
     "baseUrl": "https://github.com/Ascendara/ascendara"
   },
-  "license": "CC-BY-NC-1.0",
+  "license": "MIT",
   "licenseFilename": "LICENSE",
   "readmeFilename": "README.md",
   "author": "tagoWorks",
@@ -38,6 +38,8 @@
     "dist": "python3 ./scripts/build_ascendara.py",
     "dist-linux": "python3 ./scripts/build_ascendara_linux.py",
     "buildwithelectron": "electron-builder --config.extraMetadata.main=electron/app.js",
+    "test": "yarn test:security",
+    "test:security": "node --test electron/modules/security.test.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky",

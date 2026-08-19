@@ -6,9 +6,16 @@ const ENDPOINTS = {
   r2: "https://r2.ascendara.app/",
 };
 
+const requestServiceStatus = (url, options) => {
+  // Status checks deliberately use the narrow main-process bridge instead of a
+  // general HTTPS helper. That keeps this service useful even after preload loses
+  // direct Node networking access.
+  return window.electron.requestAscendaraService(url, options);
+};
+
 const checkEndpoint = async url => {
   try {
-    const response = await window.electron.request(url, {
+    const response = await requestServiceStatus(url, {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -91,7 +98,7 @@ const checkEndpoint = async url => {
 
 const checkInternetConnectivity = async () => {
   try {
-    const response = await window.electron.request("https://monitor.ascendara.app/", {
+    const response = await requestServiceStatus("https://monitor.ascendara.app/", {
       method: "HEAD",
       timeout: 5000,
     });
