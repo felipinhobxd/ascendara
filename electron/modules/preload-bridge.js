@@ -108,18 +108,17 @@ function createPreloadIpcTransport(ipcRenderer) {
     const safeChannel = validateIpcChannel(channel);
     const callName = `ipcRenderer.${method}("${safeChannel}")`;
 
-    // Strict mode is used by the developer smoke test. If startup still depends on
-    // this compatibility object, CI fails at the exact call instead of letting us
-    // discover the dependency after nodeIntegration has already been disabled.
+    // Strict mode is an opt-in migration tool, not the normal Ascendara runtime. It is
+    // useful when deliberately testing whether a feature can live without this legacy
+    // bridge, while regular builds stay compatible with the official application.
     if (legacyBridgeIsStrict()) {
       throw new Error(
         `${callName} uses Ascendara's legacy renderer IPC bridge. Add or use a named preload API instead.`
       );
     }
 
-    // Keep production compatible during the migration, but leave one useful breadcrumb
-    // per call shape for support logs. Once the inventory reaches zero, this object can
-    // be removed instead of living as permanent security debt.
+    // Keep normal builds compatible, but leave one useful breadcrumb per call shape for
+    // support logs. That gives future cleanup work a trail without changing user behavior.
     const warningKey = `${method}:${safeChannel}`;
     if (!warnedLegacyCalls.has(warningKey)) {
       warnedLegacyCalls.add(warningKey);
