@@ -11,6 +11,10 @@ const {
   isTrustedIpcSender,
   resolveInsideDirectory,
 } = require("./security");
+const {
+  createPreloadIpcTransport,
+  validateIpcChannel,
+} = require("./preload-bridge");
 
 test("auth popups only accept HTTPS on known Google and Firebase hosts", () => {
   assert.equal(isTrustedAuthUrl("https://accounts.google.com/o/oauth2/v2/auth"), true);
@@ -98,6 +102,61 @@ test("installing the ipcMain guard twice does not double-wrap handlers", () => {
   assert.equal(ipcMain.handle, firstHandle);
   ipcMain.handle("example", () => true);
   assert.equal(registrationCount, 1);
+});
+
+test("preload IPC channels reject unexpected characters", () => {
+  assert.equal(validateIpcChannel("qbittorrent:login"), "qbittorrent:login");
+  assert.equal(validateIpcChannel("download-progress"), "download-progress");
+  assert.throws(() => validateIpcChannel("download progress"), /IPC channel names/);
+  assert.throws(() => validateIpcChannel("../read-file"), /IPC channel names/);
+});
+
+test("legacy preload listeners keep callback shape without exposing Electron events", () => {
+  const listeners = new Map();
+  const ipcRenderer = {
+    invoke: async (channel, ...args) => ({ channel, args }),
+    on: (channel, listener) => listeners.set(channel, listener),
+    removeListener: (channel, listener) => {
+      if (listeners.get(channel) === listener) listeners.delete(channel);
+    },
+    removeAllListeners: channel => listeners.delete(channel),
+  };
+  const transport = createPreloadIpcTransport(ipcRenderer);
+  const received = [];
+  const callback = (...args) => received.push(args);
+
+  transport.legacy.on("download-progress", callback);
+  const electronEvent = { sender: { secret: true } };
+  listeners.get("download-progress")(electronEvent, { percent: 42 });
+
+  assert.deepEqual(received, [[null, { percent: 42 }]]);
+  assert.notEqual(received[0][0], electronEvent);
+
+  transport.legacy.off("download-progress", callback);
+  assert.equal(listeners.has("download-progress"), false);
+});
+
+test("named preload subscriptions return reliable cleanup functions", () => {
+  const listeners = new Map();
+  const ipcRenderer = {
+    invoke: async () => true,
+    on: (channel, listener) => listeners.set(channel, listener),
+    removeListener: (channel, listener) => {
+      if (listeners.get(channel) === listener) listeners.delete(channel);
+    },
+    removeAllListeners: channel => listeners.delete(channel),
+  };
+  const transport = createPreloadIpcTransport(ipcRenderer);
+  const values = [];
+  const cleanup = transport.subscribe("settings-updated", value => values.push(value), {
+    selectArgs: args => [args[0]],
+  });
+
+  listeners.get("settings-updated")({}, { theme: "dark" });
+  assert.deepEqual(values, [{ theme: "dark" }]);
+
+  cleanup();
+  assert.equal(listeners.has("settings-updated"), false);
 });
 
 test("local file helpers cannot escape their assigned directory", () => {
