@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import SystemCenter from "@/components/SystemCenter";
+import GameProfilesCenter from "@/components/GameProfilesCenter";
+import SmartCollectionsCenter from "@/components/SmartCollectionsCenter";
 import { Search, Library, Settings, Gamepad2, ChevronRight, Command } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -344,6 +346,8 @@ const GlobalSearch = () => {
       </Dialog>
 
       <SystemCenter />
+      <GameProfilesCenter />
+      <SmartCollectionsCenter />
     </>
   );
 };
