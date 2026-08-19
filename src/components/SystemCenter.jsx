@@ -15,90 +15,88 @@ import {
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { checkServerStatus } from "@/services/serverStatus";
+import { Button } from "@/components/ui/button";
+import {
+  FeatureCenterDialog,
+  FeatureSection,
+  FeatureState,
+  FeatureStat,
+  FeatureTabs,
+} from "@/components/feature-centers/FeatureCenterPrimitives";
+import { useLanguage } from "@/context/LanguageContext";
+import { useFeatureCenterDialog } from "@/hooks/useFeatureCenterDialog";
+import { FEATURE_CENTER_EVENTS } from "@/lib/featureCenterEvents";
 import {
   clearTransientUiState,
   createSettingsRecoveryPoint,
   initializeRecoveryMode,
   isSafeUiModeEnabled,
+  listOfficialRollbackVersions,
   listSettingsRecoveryPoints,
   restoreSettingsRecoveryPoint,
+  rollbackAscendaraVersion,
   setSafeUiMode,
 } from "@/services/recoveryService";
-
-const SYSTEM_CENTER_EVENT = "ascendara:open-system-center";
-const LOW_SPACE_BYTES = 5 * 1024 * 1024 * 1024;
+import {
+  formatBytes,
+  inspectSystemHealth,
+  loadStorageSnapshot,
+} from "@/services/systemHealthService";
 
 const STATUS_META = {
   healthy: {
     icon: CheckCircle2,
-    label: "Healthy",
     className: "text-green-500",
     badge: "border-green-500/30 bg-green-500/10 text-green-500",
   },
   warning: {
     icon: AlertTriangle,
-    label: "Attention",
     className: "text-yellow-500",
     badge: "border-yellow-500/30 bg-yellow-500/10 text-yellow-500",
   },
   error: {
     icon: XCircle,
-    label: "Problem",
     className: "text-red-500",
     badge: "border-red-500/30 bg-red-500/10 text-red-500",
   },
   info: {
     icon: CircleHelp,
-    label: "Info",
     className: "text-blue-500",
     badge: "border-blue-500/30 bg-blue-500/10 text-blue-500",
   },
 };
 
-function formatBytes(value) {
-  const bytes = Number(value) || 0;
-  if (bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** index).toFixed(index >= 3 ? 1 : 0)} ${units[index]}`;
-}
-
-function toolIsInstalled(value) {
-  if (value === true) return true;
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      (value.installed === true || value.success === true || value.status === "installed")
-  );
-}
-
-function HealthRow({ item, onAction }) {
+function HealthRow({ item, onAction, t }) {
   const meta = STATUS_META[item.status] || STATUS_META.info;
   const Icon = meta.icon;
 
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-border bg-card/60 p-4">
-      <Icon className={`mt-0.5 h-5 w-5 flex-shrink-0 ${meta.className}`} />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="font-medium text-foreground">{item.title}</p>
-          <Badge variant="outline" className={meta.badge}>
-            {meta.label}
-          </Badge>
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/60 p-4 sm:flex-row sm:items-start">
+      <div className="flex min-w-0 flex-1 items-start gap-3">
+        <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${meta.className}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-medium text-foreground">{item.title}</p>
+            <Badge variant="outline" className={meta.badge}>
+              {t(`featureCenters.system.status.${item.status || "info"}`)}
+            </Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
+          {item.detail && (
+            <p className="mt-2 break-all rounded-md bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground">
+              {item.detail}
+            </p>
+          )}
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
-        {item.detail && (
-          <p className="mt-1 break-all font-mono text-xs text-muted-foreground/80">
-            {item.detail}
-          </p>
-        )}
       </div>
       {item.action && (
-        <Button size="sm" variant="outline" onClick={() => onAction(item.action)}>
+        <Button
+          size="sm"
+          variant="outline"
+          className="self-start sm:ml-auto"
+          onClick={() => onAction(item.action)}
+        >
           {item.action.label}
         </Button>
       )}
@@ -107,31 +105,33 @@ function HealthRow({ item, onAction }) {
 }
 
 const SystemCenter = () => {
+  const { t } = useLanguage();
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("health");
+  const handleOpenEvent = useCallback(detail => {
+    if (["health", "storage", "recovery"].includes(detail?.tab)) {
+      setActiveTab(detail.tab);
+    }
+  }, []);
+  const [open, setOpen] = useFeatureCenterDialog(
+    FEATURE_CENTER_EVENTS.system,
+    handleOpenEvent
+  );
+
   const [checking, setChecking] = useState(false);
   const [healthItems, setHealthItems] = useState([]);
   const [storage, setStorage] = useState(null);
   const [storageLoading, setStorageLoading] = useState(false);
+  const [storageError, setStorageError] = useState("");
   const [safeUiMode, setSafeUiModeState] = useState(false);
   const [recoveryPoints, setRecoveryPoints] = useState([]);
   const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [rollbackVersions, setRollbackVersions] = useState([]);
+  const [rollbackLoading, setRollbackLoading] = useState(false);
 
   useEffect(() => {
     initializeRecoveryMode();
     setSafeUiModeState(isSafeUiModeEnabled());
-
-    const handleOpen = event => {
-      const requestedTab = event?.detail?.tab;
-      if (["health", "storage", "recovery"].includes(requestedTab)) {
-        setActiveTab(requestedTab);
-      }
-      setOpen(true);
-    };
-
-    window.addEventListener(SYSTEM_CENTER_EVENT, handleOpen);
-    return () => window.removeEventListener(SYSTEM_CENTER_EVENT, handleOpen);
   }, []);
 
   const closeAndNavigate = useCallback(
@@ -139,229 +139,60 @@ const SystemCenter = () => {
       setOpen(false);
       navigate(path);
     },
-    [navigate]
+    [navigate, setOpen]
   );
-
-  const refreshStorage = useCallback(async () => {
-    setStorageLoading(true);
-    try {
-      const downloadDirectory = await window.electron.getDownloadDirectory();
-      const [driveSpace, gamesSize] = await Promise.all([
-        window.electron.getDriveSpace(downloadDirectory),
-        window.electron.getInstalledGamesSize(),
-      ]);
-      setStorage({ downloadDirectory, driveSpace, gamesSize });
-    } catch (error) {
-      console.error("[SystemCenter] Storage check failed:", error);
-      toast.error("Could not inspect storage", { description: error.message });
-    } finally {
-      setStorageLoading(false);
-    }
-  }, []);
-
-  const refreshRecoveryPoints = useCallback(async () => {
-    setRecoveryLoading(true);
-    try {
-      setRecoveryPoints(await listSettingsRecoveryPoints());
-    } catch (error) {
-      console.error("[SystemCenter] Could not list recovery points:", error);
-      setRecoveryPoints([]);
-    } finally {
-      setRecoveryLoading(false);
-    }
-  }, []);
 
   const runHealthCheck = useCallback(async () => {
     setChecking(true);
-    const items = [];
-
     try {
-      const [settings, isWindows, isLinux, serverStatus] = await Promise.all([
-        window.electron.getSettings(),
-        window.electron.isOnWindows(),
-        window.electron.isOnLinux(),
-        checkServerStatus(true),
-      ]);
-
-      items.push({
-        id: "settings",
-        status: settings ? "healthy" : "error",
-        title: "Settings",
-        description: settings
-          ? "Ascendara can read its current configuration."
-          : "Ascendara could not read its configuration.",
-        action: settings ? null : { type: "settings", label: "Open Settings" },
-      });
-
-      const downloadDirectory =
-        settings?.downloadDirectory || (await window.electron.getDownloadDirectory());
-      if (!downloadDirectory) {
-        items.push({
-          id: "download-directory",
-          status: "error",
-          title: "Game directory",
-          description: "No primary game directory is configured.",
-          action: { type: "settings", label: "Configure" },
-        });
-      } else {
-        const [writable, driveSpace] = await Promise.all([
-          window.electron.canCreateFiles(downloadDirectory),
-          window.electron.getDriveSpace(downloadDirectory),
-        ]);
-        const freeSpace = Number(driveSpace?.freeSpace) || 0;
-        items.push({
-          id: "download-directory",
-          status: !writable
-            ? "error"
-            : freeSpace > 0 && freeSpace < LOW_SPACE_BYTES
-              ? "warning"
-              : "healthy",
-          title: "Game directory",
-          description: !writable
-            ? "Ascendara cannot create files in the configured game directory."
-            : freeSpace > 0 && freeSpace < LOW_SPACE_BYTES
-              ? `The directory is writable, but only ${formatBytes(freeSpace)} is free.`
-              : `The directory is writable${freeSpace > 0 ? ` with ${formatBytes(freeSpace)} free` : ""}.`,
-          detail: downloadDirectory,
-          action: !writable ? { type: "settings", label: "Review" } : null,
-        });
-      }
-
-      if (settings?.customSourcesMode) {
-        items.push({
-          id: "index",
-          status: settings?.customSource?.url ? "healthy" : "warning",
-          title: "External Source",
-          description: settings?.customSource?.url
-            ? "External Sources mode is configured."
-            : "External Sources mode is enabled without an active source.",
-          detail: settings?.customSource?.url || null,
-          action: settings?.customSource?.url ? null : { type: "settings", label: "Configure" },
-        });
-      } else if (settings?.localIndex) {
-        const localIndexExists = await window.electron.checkFileExists(settings.localIndex);
-        items.push({
-          id: "index",
-          status: localIndexExists ? "healthy" : "warning",
-          title: "Local Index",
-          description: localIndexExists
-            ? "The configured Local Index is available."
-            : "The configured Local Index could not be found at its saved path.",
-          detail: settings.localIndex,
-          action: localIndexExists ? null : { type: "local-refresh", label: "Repair" },
-        });
-      } else {
-        items.push({
-          id: "index",
-          status: "warning",
-          title: "Game Index",
-          description: "No Local Index is configured and External Sources mode is not active.",
-          action: { type: "local-refresh", label: "Set Up" },
-        });
-      }
-
-      const serviceNames = ["monitor", "api", "storage", "lfs", "r2"];
-      const failedServices = serviceNames.filter(name => !serverStatus?.[name]?.ok);
-      items.push({
-        id: "services",
-        status: serverStatus?.noInternet || failedServices.length > 0 ? "warning" : "healthy",
-        title: "Ascendara services",
-        description: serverStatus?.noInternet
-          ? "No connection to Ascendara services was detected."
-          : failedServices.length > 0
-            ? `Unavailable: ${failedServices.join(", ")}. Local features can continue to work.`
-            : "Monitor, API, CDN, LFS and R2 endpoints are reachable.",
-      });
-
-      try {
-        const tools = await window.electron.getInstalledTools();
-        const count = Array.isArray(tools) ? tools.length : 0;
-        items.push({
-          id: "tools",
-          status: "info",
-          title: "Optional tools",
-          description: `${count} optional Ascendara tool${count === 1 ? " is" : "s are"} registered as installed.`,
-        });
-      } catch {
-        items.push({
-          id: "tools",
-          status: "warning",
-          title: "Optional tools",
-          description: "Ascendara could not inspect optional tools.",
-        });
-      }
-
-      if (isWindows) {
-        try {
-          const dependencies = await window.electron.checkGameDependencies();
-          const missing = Array.isArray(dependencies)
-            ? dependencies.filter(dependency => dependency.installed === false)
-            : [];
-          items.push({
-            id: "dependencies",
-            status: missing.length > 0 ? "warning" : "healthy",
-            title: "Windows game dependencies",
-            description: missing.length > 0
-              ? `${missing.length} missing: ${missing.map(item => item.name || item.file).join(", ")}.`
-              : "Required game dependencies were detected.",
-            action: missing.length > 0 ? { type: "install-dependencies", label: "Install" } : null,
-          });
-        } catch (error) {
-          items.push({
-            id: "dependencies",
-            status: "warning",
-            title: "Windows game dependencies",
-            description: `Dependency status could not be checked: ${error.message}`,
-          });
-        }
-      }
-
-      if (isLinux) {
-        try {
-          const umu = await window.electron.isUmuInstalled();
-          items.push({
-            id: "umu",
-            status: toolIsInstalled(umu) ? "healthy" : "info",
-            title: "UMU Launcher",
-            description: toolIsInstalled(umu)
-              ? "UMU Launcher is available for Linux compatibility."
-              : "UMU Launcher is optional and is not currently installed.",
-            action: toolIsInstalled(umu) ? null : { type: "settings", label: "Configure" },
-          });
-        } catch {}
-      }
-
-      try {
-        const steamCmd = await window.electron.isSteamCMDInstalled();
-        items.push({
-          id: "steamcmd",
-          status: toolIsInstalled(steamCmd) ? "healthy" : "info",
-          title: "SteamCMD",
-          description: toolIsInstalled(steamCmd)
-            ? "SteamCMD is available."
-            : "SteamCMD is optional and can be installed when Workshop features need it.",
-        });
-      } catch {}
-    } catch (error) {
-      console.error("[SystemCenter] Health check failed:", error);
-      items.push({
-        id: "health-error",
-        status: "error",
-        title: "Health check interrupted",
-        description: error.message || "An unexpected error interrupted the health check.",
-      });
+      setHealthItems(await inspectSystemHealth(t));
     } finally {
-      setHealthItems(items);
       setChecking(false);
     }
+  }, [t]);
+
+  const refreshStorage = useCallback(async () => {
+    setStorageLoading(true);
+    setStorageError("");
+    try {
+      setStorage(await loadStorageSnapshot());
+    } catch (error) {
+      console.error("[SystemCenter] Storage check failed:", error);
+      setStorageError(error.message || t("featureCenters.system.storage.error"));
+    } finally {
+      setStorageLoading(false);
+    }
+  }, [t]);
+
+  const refreshRecovery = useCallback(async () => {
+    setRecoveryLoading(true);
+    setRollbackLoading(true);
+
+    const [pointsResult, rollbackResult] = await Promise.allSettled([
+      listSettingsRecoveryPoints(),
+      listOfficialRollbackVersions(),
+    ]);
+
+    setRecoveryPoints(
+      pointsResult.status === "fulfilled" && Array.isArray(pointsResult.value)
+        ? pointsResult.value
+        : []
+    );
+    setRollbackVersions(
+      rollbackResult.status === "fulfilled" && Array.isArray(rollbackResult.value)
+        ? rollbackResult.value
+        : []
+    );
+    setRecoveryLoading(false);
+    setRollbackLoading(false);
   }, []);
 
   useEffect(() => {
     if (!open) return;
     if (activeTab === "health") runHealthCheck();
     if (activeTab === "storage") refreshStorage();
-    if (activeTab === "recovery") refreshRecoveryPoints();
-  }, [open, activeTab, runHealthCheck, refreshRecoveryPoints, refreshStorage]);
+    if (activeTab === "recovery") refreshRecovery();
+  }, [open, activeTab, refreshRecovery, refreshStorage, runHealthCheck]);
 
   const handleHealthAction = useCallback(
     async action => {
@@ -370,15 +201,17 @@ const SystemCenter = () => {
       if (action.type !== "install-dependencies") return;
 
       try {
-        toast.info("Installing game dependencies…");
+        toast.info(t("featureCenters.system.toasts.dependenciesInstalling"));
         await window.electron.installDependencies();
-        toast.success("Dependency installer finished");
+        toast.success(t("featureCenters.system.toasts.dependenciesDone"));
         runHealthCheck();
       } catch (error) {
-        toast.error("Dependency installation failed", { description: error.message });
+        toast.error(t("featureCenters.system.toasts.dependenciesFailed"), {
+          description: error.message,
+        });
       }
     },
-    [closeAndNavigate, runHealthCheck]
+    [closeAndNavigate, runHealthCheck, t]
   );
 
   const overallHealth = useMemo(() => {
@@ -387,310 +220,442 @@ const SystemCenter = () => {
     return healthItems.length > 0 ? "healthy" : "info";
   }, [healthItems]);
 
+  const healthMeta = STATUS_META[overallHealth];
+  const HealthIcon = healthMeta.icon;
+  const driveDirectories = storage?.driveSpace?.directories || [];
+  const gameDirectories = storage?.gamesSize?.directorySizes || [];
+  const previousVersion = rollbackVersions[0] || null;
+
   const createRecoveryPoint = async () => {
     setRecoveryLoading(true);
     try {
       await createSettingsRecoveryPoint("manual");
-      toast.success("Settings recovery point created");
-      await refreshRecoveryPoints();
+      toast.success(t("featureCenters.system.toasts.pointCreated"));
+      await refreshRecovery();
     } catch (error) {
-      toast.error("Could not create recovery point", { description: error.message });
-    } finally {
+      toast.error(t("featureCenters.system.toasts.pointCreateFailed"), {
+        description: error.message,
+      });
       setRecoveryLoading(false);
     }
   };
 
   const restoreRecoveryPoint = async point => {
-    const confirmed = window.confirm(
-      `Restore settings from ${new Date(point.createdAt).toLocaleString()}? Current settings will be replaced and Ascendara will reload.`
-    );
-    if (!confirmed) return;
+    const date = point.createdAt ? new Date(point.createdAt).toLocaleString() : point.id;
+    if (!window.confirm(t("featureCenters.system.recovery.restoreConfirm", { date }))) return;
 
     try {
       await restoreSettingsRecoveryPoint(point.id);
       window.location.reload();
     } catch (error) {
-      toast.error("Could not restore recovery point", { description: error.message });
+      toast.error(t("featureCenters.system.toasts.pointRestoreFailed"), {
+        description: error.message,
+      });
     }
   };
 
   const clearBrowserData = async () => {
-    const confirmed = window.confirm(
-      "Clear Ascendara browser data? This clears Chromium cache, cookies, LocalStorage and IndexedDB. You may be signed out and browser-backed UI preferences may reset. Installed games and the on-disk settings file are not deleted."
-    );
-    if (!confirmed) return;
-
+    if (!window.confirm(t("featureCenters.system.recovery.clearBrowserDataConfirm"))) return;
     try {
       await window.electron.clearCache();
+      clearTransientUiState();
       window.location.reload();
     } catch (error) {
-      toast.error("Could not clear browser data", { description: error.message });
+      toast.error(t("featureCenters.system.toasts.browserDataFailed"), {
+        description: error.message,
+      });
     }
   };
 
-  const healthMeta = STATUS_META[overallHealth];
-  const HealthIcon = healthMeta.icon;
-  const driveDirectories = storage?.driveSpace?.directories || [];
-  const gameDirectories = storage?.gamesSize?.directorySizes || [];
+  const toggleSafeMode = enabled => {
+    setSafeUiMode(enabled);
+    setSafeUiModeState(enabled);
+    toast.success(
+      t(
+        enabled
+          ? "featureCenters.system.recovery.safeEnabled"
+          : "featureCenters.system.recovery.safeDisabled"
+      ),
+      {
+        description: t(
+          enabled
+            ? "featureCenters.system.recovery.safeEnabledDescription"
+            : "featureCenters.system.recovery.safeDisabledDescription"
+        ),
+      }
+    );
+  };
+
+  const startRollback = async () => {
+    if (!previousVersion) return;
+    if (
+      !window.confirm(
+        t("featureCenters.system.recovery.rollbackConfirm", {
+          version: previousVersion.version,
+        })
+      )
+    ) {
+      return;
+    }
+
+    toast.loading(
+      t("featureCenters.system.toasts.rollbackDownloading", {
+        version: previousVersion.version,
+      }),
+      { id: "ascendara-rollback" }
+    );
+
+    try {
+      await rollbackAscendaraVersion(previousVersion.version);
+    } catch (error) {
+      toast.error(t("featureCenters.system.toasts.rollbackFailed"), {
+        id: "ascendara-rollback",
+        description: error.message,
+      });
+    }
+  };
+
+  const tabs = [
+    { id: "health", label: t("featureCenters.system.tabs.health"), icon: Activity },
+    { id: "storage", label: t("featureCenters.system.tabs.storage"), icon: HardDrive },
+    { id: "recovery", label: t("featureCenters.system.tabs.recovery"), icon: Wrench },
+  ];
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-h-[88vh] max-w-5xl overflow-hidden p-0">
-        <DialogHeader className="border-b border-border px-6 py-5">
-          <DialogTitle className="flex items-center gap-3 text-xl">
-            <ShieldCheck className="h-6 w-6 text-primary" /> Ascendara System Center
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="grid min-h-[560px] grid-cols-1 md:grid-cols-[180px_1fr]">
-          <aside className="flex gap-1 overflow-x-auto border-b border-border bg-muted/20 p-3 md:flex-col md:border-b-0 md:border-r">
-            {[
-              ["health", "Health", Activity],
-              ["storage", "Storage", HardDrive],
-              ["recovery", "Recovery", Wrench],
-            ].map(([id, label, Icon]) => (
-              <Button
-                key={id}
-                variant={activeTab === id ? "secondary" : "ghost"}
-                className="justify-start gap-2"
-                onClick={() => setActiveTab(id)}
-              >
-                <Icon className="h-4 w-4" /> {label}
-              </Button>
-            ))}
-          </aside>
-
-          <section className="overflow-y-auto p-6">
-            {activeTab === "health" && (
-              <div className="space-y-5">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <HealthIcon className={`h-6 w-6 ${healthMeta.className}`} />
-                      <h2 className="text-xl font-semibold text-foreground">System health</h2>
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Checks the existing Ascendara configuration without changing it.
-                    </p>
-                  </div>
-                  <Button variant="outline" onClick={runHealthCheck} disabled={checking}>
-                    <RefreshCw className={`mr-2 h-4 w-4 ${checking ? "animate-spin" : ""}`} />
-                    {checking ? "Checking…" : "Run again"}
-                  </Button>
-                </div>
-                <div className="space-y-3">
-                  {healthItems.map(item => (
-                    <HealthRow key={item.id} item={item} onAction={handleHealthAction} />
-                  ))}
-                  {checking && healthItems.length === 0 && (
-                    <p className="py-10 text-center text-sm text-muted-foreground">
-                      Checking Ascendara…
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {activeTab === "storage" && (
-              <div className="space-y-6">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <h2 className="text-xl font-semibold text-foreground">Storage Manager</h2>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Uses Ascendara's existing directory scanner and drive-space cache.
-                    </p>
-                  </div>
-                  <Button variant="outline" onClick={refreshStorage} disabled={storageLoading}>
-                    <RefreshCw className={`mr-2 h-4 w-4 ${storageLoading ? "animate-spin" : ""}`} />
-                    Refresh
-                  </Button>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-3">
-                  {[
-                    ["Games", storage?.gamesSize?.totalSize],
-                    ["Free space", storage?.driveSpace?.freeSpace],
-                    ["Total capacity", storage?.driveSpace?.totalSpace],
-                  ].map(([label, value]) => (
-                    <div key={label} className="rounded-xl border border-border bg-card p-4">
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-                      <p className="mt-2 text-2xl font-semibold text-foreground">
-                        {formatBytes(value)}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="space-y-3">
-                  {driveDirectories.map(directory => {
-                    const gameSize =
-                      gameDirectories.find(item => item.path === directory.path)?.size || 0;
-                    const usedPercent =
-                      directory.totalSpace > 0
-                        ? Math.max(
-                            0,
-                            Math.min(
-                              100,
-                              ((directory.totalSpace - directory.freeSpace) /
-                                directory.totalSpace) *
-                                100
-                            )
-                          )
-                        : 0;
-                    return (
-                      <div key={directory.path} className="rounded-xl border border-border bg-card/60 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="min-w-0 truncate font-mono text-xs text-foreground">
-                            {directory.path}
-                          </p>
-                          <span className="text-xs text-muted-foreground">
-                            {usedPercent.toFixed(0)}% used
-                          </span>
-                        </div>
-                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className="h-full rounded-full bg-primary"
-                            style={{ width: `${usedPercent}%` }}
-                          />
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
-                          <span>Games: {formatBytes(gameSize)}</span>
-                          <span>Free: {formatBytes(directory.freeSpace)}</span>
-                          <span>Total: {formatBytes(directory.totalSpace)}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {!storageLoading && driveDirectories.length === 0 && (
-                    <p className="py-10 text-center text-sm text-muted-foreground">
-                      No storage locations are currently available.
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {activeTab === "recovery" && (
-              <div className="space-y-5">
-                <div>
-                  <h2 className="flex items-center gap-2 text-xl font-semibold text-foreground">
-                    <RotateCcw className="h-5 w-5 text-primary" /> Recovery
+    <FeatureCenterDialog
+      open={open}
+      onOpenChange={setOpen}
+      title={t("featureCenters.system.title")}
+      description={t("featureCenters.system.description")}
+      icon={ShieldCheck}
+    >
+      <FeatureTabs items={tabs} activeId={activeTab} onChange={setActiveTab}>
+        {activeTab === "health" && (
+          <div className="space-y-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <HealthIcon className={`h-6 w-6 ${healthMeta.className}`} />
+                  <h2 className="text-xl font-semibold text-foreground">
+                    {t("featureCenters.system.health.title")}
                   </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Recovery points protect settings. They do not replace the Ascendara binary or game files.
-                  </p>
+                  {healthItems.length > 0 && (
+                    <Badge variant="outline" className={healthMeta.badge}>
+                      {t(`featureCenters.system.status.${overallHealth}`)}
+                    </Badge>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t("featureCenters.system.health.description")}
+                </p>
+              </div>
+              <Button variant="outline" onClick={runHealthCheck} disabled={checking}>
+                <RefreshCw className={`mr-2 h-4 w-4 ${checking ? "animate-spin" : ""}`} />
+                {t(
+                  checking
+                    ? "featureCenters.system.health.checking"
+                    : "featureCenters.system.health.runAgain"
+                )}
+              </Button>
+            </div>
+
+            {checking && healthItems.length === 0 ? (
+              <FeatureState
+                icon={RefreshCw}
+                title={t("featureCenters.system.health.checkingApp")}
+              />
+            ) : (
+              <div className="space-y-3">
+                {healthItems.map(item => (
+                  <HealthRow key={item.id} item={item} onAction={handleHealthAction} t={t} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "storage" && (
+          <div className="space-y-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-foreground">
+                  {t("featureCenters.system.storage.title")}
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t("featureCenters.system.storage.description")}
+                </p>
+              </div>
+              <Button variant="outline" onClick={refreshStorage} disabled={storageLoading}>
+                <RefreshCw
+                  className={`mr-2 h-4 w-4 ${storageLoading ? "animate-spin" : ""}`}
+                />
+                {t("featureCenters.common.refresh")}
+              </Button>
+            </div>
+
+            {storageError ? (
+              <FeatureState
+                icon={AlertTriangle}
+                title={t("featureCenters.system.storage.error")}
+                description={storageError}
+                action={{
+                  label: t("featureCenters.common.retry"),
+                  onClick: refreshStorage,
+                }}
+              />
+            ) : storageLoading && !storage ? (
+              <FeatureState icon={RefreshCw} title={t("featureCenters.common.loading")} />
+            ) : (
+              <>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <FeatureStat
+                    label={t("featureCenters.system.storage.games")}
+                    value={formatBytes(storage?.gamesSize?.totalSize)}
+                  />
+                  <FeatureStat
+                    label={t("featureCenters.system.storage.freeSpace")}
+                    value={formatBytes(storage?.driveSpace?.freeSpace)}
+                  />
+                  <FeatureStat
+                    label={t("featureCenters.system.storage.totalCapacity")}
+                    value={formatBytes(storage?.driveSpace?.totalSpace)}
+                  />
                 </div>
 
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div>
-                      <h3 className="font-medium text-foreground">Safe UI Mode</h3>
-                      <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                        Reduces animations, transitions and transparency-heavy effects when the interface is stuttering or rendering incorrectly.
-                      </p>
-                    </div>
-                    <Button
-                      variant={safeUiMode ? "secondary" : "outline"}
-                      onClick={() => {
-                        const enabled = !safeUiMode;
-                        setSafeUiMode(enabled);
-                        setSafeUiModeState(enabled);
-                      }}
-                    >
-                      {safeUiMode ? "Disable" : "Enable"}
+                <FeatureSection
+                  title={t("featureCenters.system.storage.configuredLocations")}
+                  actions={
+                    <Button size="sm" variant="outline" onClick={() => closeAndNavigate("/settings")}>
+                      {t("featureCenters.system.storage.manageFolders")}
                     </Button>
-                  </div>
-                </div>
+                  }
+                >
+                  <div className="space-y-3">
+                    {driveDirectories.map(directory => {
+                      const gameSize =
+                        gameDirectories.find(item => item.path === directory.path)?.size || 0;
+                      const usedPercent =
+                        directory.totalSpace > 0
+                          ? Math.max(
+                              0,
+                              Math.min(
+                                100,
+                                ((directory.totalSpace - directory.freeSpace) /
+                                  directory.totalSpace) *
+                                  100
+                              )
+                            )
+                          : 0;
 
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <h3 className="font-medium text-foreground">Settings recovery points</h3>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        Ascendara automatically creates one when an update is ready. Up to five are retained.
-                      </p>
-                    </div>
-                    <Button variant="outline" onClick={createRecoveryPoint} disabled={recoveryLoading}>
-                      Create now
-                    </Button>
-                  </div>
-                  <div className="mt-4 space-y-2">
-                    {recoveryPoints.map(point => (
-                      <div
-                        key={point.id}
-                        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 p-3"
-                      >
-                        <div>
-                          <p className="text-sm font-medium text-foreground">
-                            {new Date(point.createdAt).toLocaleString()}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {point.reason || "manual"}
-                            {point.appVersion ? ` · Ascendara ${point.appVersion}` : ""}
-                          </p>
+                      return (
+                        <div key={directory.path} className="rounded-lg border border-border p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="min-w-0 break-all font-mono text-xs text-foreground">
+                              {directory.path}
+                            </p>
+                            <span className="shrink-0 text-xs text-muted-foreground">
+                              {t("featureCenters.system.storage.used", {
+                                percent: usedPercent.toFixed(0),
+                              })}
+                            </span>
+                          </div>
+                          <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-primary"
+                              style={{ width: `${usedPercent}%` }}
+                            />
+                          </div>
+                          <div className="mt-3 grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
+                            <span>
+                              {t("featureCenters.system.storage.locationGames", {
+                                size: formatBytes(gameSize),
+                              })}
+                            </span>
+                            <span>
+                              {t("featureCenters.system.storage.locationFree", {
+                                size: formatBytes(directory.freeSpace),
+                              })}
+                            </span>
+                            <span>
+                              {t("featureCenters.system.storage.locationTotal", {
+                                size: formatBytes(directory.totalSpace),
+                              })}
+                            </span>
+                          </div>
                         </div>
-                        <Button size="sm" variant="outline" onClick={() => restoreRecoveryPoint(point)}>
-                          Restore settings
-                        </Button>
-                      </div>
-                    ))}
-                    {!recoveryLoading && recoveryPoints.length === 0 && (
-                      <p className="text-sm text-muted-foreground">No recovery points yet.</p>
+                      );
+                    })}
+
+                    {!storageLoading && driveDirectories.length === 0 && (
+                      <FeatureState
+                        compact
+                        icon={HardDrive}
+                        title={t("featureCenters.system.storage.noLocations")}
+                      />
                     )}
                   </div>
-                </div>
-
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <div className="rounded-xl border border-border bg-card p-5">
-                    <h3 className="font-medium text-foreground">Reset temporary UI state</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Clears only temporary loading, installing and tour flags. Account and game data stay untouched.
-                    </p>
-                    <Button
-                      className="mt-4"
-                      variant="outline"
-                      onClick={() => {
-                        clearTransientUiState();
-                        toast.success("Temporary UI state cleared");
-                      }}
-                    >
-                      <Wrench className="mr-2 h-4 w-4" /> Reset temporary state
-                    </Button>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-card p-5">
-                    <h3 className="font-medium text-foreground">Clear Chromium browser data</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Clears cache, cookies, LocalStorage and IndexedDB. You may be signed out; on-disk settings and installed games are not deleted.
-                    </p>
-                    <Button className="mt-4" variant="outline" onClick={clearBrowserData}>
-                      <Database className="mr-2 h-4 w-4" /> Clear browser data
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" onClick={() => window.location.reload()}>
-                    <RefreshCw className="mr-2 h-4 w-4" /> Reload interface
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={async () => {
-                      const opened = await window.electron.openDevTools();
-                      if (!opened) toast.info("DevTools are unavailable in this build.");
-                    }}
-                  >
-                    <Terminal className="mr-2 h-4 w-4" /> Open DevTools
-                  </Button>
-                </div>
-              </div>
+                </FeatureSection>
+              </>
             )}
-          </section>
-        </div>
-      </DialogContent>
-    </Dialog>
+          </div>
+        )}
+
+        {activeTab === "recovery" && (
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-xl font-semibold text-foreground">
+                {t("featureCenters.system.recovery.title")}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t("featureCenters.system.recovery.description")}
+              </p>
+            </div>
+
+            <FeatureSection
+              title={t("featureCenters.system.recovery.safeMode")}
+              description={t("featureCenters.system.recovery.safeModeDescription")}
+              actions={
+                <Button
+                  variant={safeUiMode ? "secondary" : "outline"}
+                  onClick={() => toggleSafeMode(!safeUiMode)}
+                >
+                  {t(
+                    safeUiMode
+                      ? "featureCenters.system.recovery.disable"
+                      : "featureCenters.system.recovery.enable"
+                  )}
+                </Button>
+              }
+            />
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <FeatureSection
+                title={t("featureCenters.system.recovery.reload")}
+                description={t("featureCenters.system.recovery.reloadDescription")}
+              >
+                <Button variant="outline" onClick={() => window.location.reload()}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  {t("featureCenters.system.recovery.reload")}
+                </Button>
+              </FeatureSection>
+
+              <FeatureSection
+                title={t("featureCenters.system.recovery.clearBrowserData")}
+                description={t("featureCenters.system.recovery.clearBrowserDataDescription")}
+              >
+                <Button variant="outline" onClick={clearBrowserData}>
+                  <Database className="mr-2 h-4 w-4" />
+                  {t("featureCenters.system.recovery.clearAndReload")}
+                </Button>
+              </FeatureSection>
+            </div>
+
+            <FeatureSection
+              title={t("featureCenters.system.recovery.recoveryPoints")}
+              description={t("featureCenters.system.recovery.recoveryPointsDescription")}
+              actions={
+                <Button variant="outline" onClick={createRecoveryPoint} disabled={recoveryLoading}>
+                  {t("featureCenters.system.recovery.createPoint")}
+                </Button>
+              }
+            >
+              <div className="space-y-2">
+                {recoveryPoints.map(point => {
+                  const reasonKey =
+                    point.reason === "before-update"
+                      ? "beforeUpdate"
+                      : point.reason === "before-rollback"
+                        ? "beforeRollback"
+                        : "manual";
+                  return (
+                    <div
+                      key={point.id}
+                      className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row sm:items-center"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-medium text-foreground">
+                            {point.createdAt
+                              ? new Date(point.createdAt).toLocaleString()
+                              : point.id}
+                          </p>
+                          <Badge variant="outline">
+                            {t(`featureCenters.system.recovery.${reasonKey}`)}
+                          </Badge>
+                          {point.appVersion && (
+                            <Badge variant="secondary">v{point.appVersion}</Badge>
+                          )}
+                        </div>
+                      </div>
+                      <Button size="sm" variant="outline" onClick={() => restoreRecoveryPoint(point)}>
+                        {t("featureCenters.system.recovery.restore")}
+                      </Button>
+                    </div>
+                  );
+                })}
+
+                {!recoveryLoading && recoveryPoints.length === 0 && (
+                  <FeatureState
+                    compact
+                    icon={RotateCcw}
+                    title={t("featureCenters.system.recovery.noPoints")}
+                  />
+                )}
+              </div>
+            </FeatureSection>
+
+            <FeatureSection
+              title={t("featureCenters.system.recovery.rollback")}
+              description={t("featureCenters.system.recovery.rollbackDescription")}
+            >
+              {rollbackLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  {t("featureCenters.system.recovery.rollbackChecking")}
+                </div>
+              ) : previousVersion ? (
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm text-muted-foreground">
+                    {t("featureCenters.system.recovery.rollbackAvailable", {
+                      version: previousVersion.version,
+                    })}
+                  </p>
+                  <Button variant="outline" onClick={startRollback}>
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                    {t("featureCenters.system.recovery.rollbackButton", {
+                      version: previousVersion.version,
+                    })}
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {t("featureCenters.system.recovery.rollbackUnavailable")}
+                </p>
+              )}
+            </FeatureSection>
+
+            <FeatureSection
+              title={t("featureCenters.system.recovery.developerDiagnostics")}
+              description={t("featureCenters.system.recovery.developerDiagnosticsDescription")}
+            >
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  const opened = await window.electron.openDevTools();
+                  if (!opened) {
+                    toast.info(t("featureCenters.system.recovery.devToolsUnavailable"));
+                  }
+                }}
+              >
+                <Terminal className="mr-2 h-4 w-4" />
+                {t("featureCenters.system.recovery.openDevTools")}
+              </Button>
+            </FeatureSection>
+          </div>
+        )}
+      </FeatureTabs>
+    </FeatureCenterDialog>
   );
 };
 
-export { SYSTEM_CENTER_EVENT };
 export default SystemCenter;
