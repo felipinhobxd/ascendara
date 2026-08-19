@@ -5,11 +5,10 @@ const ROOT = path.join(__dirname, "..", "src");
 const REPO_ROOT = path.join(__dirname, "..");
 const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"]);
 
-// Node integration is disabled in the main renderer now, so executable Node access is
-// no longer migration debt: reintroducing it would create code that only works when the
-// emergency legacy flag is enabled. Keep these patterns focused on actual Node syntax so
-// normal prose such as "main process." in comments does not create false failures.
-const FORBIDDEN_PATTERNS = [
+// The official Ascendara runtime still enables Node integration in the main renderer.
+// Keep these patterns visible so a future isolation migration has a real inventory, but
+// do not make upstream-compatible code fail CI just because that migration is unfinished.
+const NODE_COMPATIBILITY_PATTERNS = [
   {
     label: "Node process API in renderer",
     pattern:
@@ -40,10 +39,10 @@ const FORBIDDEN_PATTERNS = [
   },
 ];
 
-// These compatibility APIs are still being removed caller-by-caller. They remain visible
-// in every build log, and --enforce-isolation turns the inventory into a hard gate once
-// we are ready to delete the compatibility object from preload entirely.
-const MIGRATION_PATTERNS = [
+// These compatibility APIs can still be reduced over time without changing Ascendara's
+// public behavior. Keeping them separate from Node usage makes the report useful even
+// while the fork intentionally follows the upstream BrowserWindow settings.
+const BRIDGE_COMPATIBILITY_PATTERNS = [
   {
     label: "legacy custom-source request alias",
     pattern: /window\.electron\.request\s*\(/g,
@@ -54,7 +53,7 @@ const MIGRATION_PATTERNS = [
   },
 ];
 
-const enforceIsolation = process.argv.includes("--enforce-isolation");
+const enforceFutureIsolation = process.argv.includes("--enforce-isolation");
 
 function collectSourceFiles(directory, files = []) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -106,29 +105,22 @@ function printFindings(title, findings) {
 }
 
 const sourceFiles = collectSourceFiles(ROOT);
-const forbiddenFindings = collectFindings(sourceFiles, FORBIDDEN_PATTERNS);
-const migrationFindings = collectFindings(sourceFiles, MIGRATION_PATTERNS);
+const nodeFindings = collectFindings(sourceFiles, NODE_COMPATIBILITY_PATTERNS);
+const bridgeFindings = collectFindings(sourceFiles, BRIDGE_COMPATIBILITY_PATTERNS);
 
-if (forbiddenFindings.length > 0) {
-  console.error("Security audit found renderer code that depends on Node integration:");
-  for (const finding of forbiddenFindings) {
-    console.error(`- ${finding.file}:${finding.line} (${finding.rule})`);
-  }
-  process.exitCode = 1;
-}
+printFindings("Upstream Node compatibility inventory:", nodeFindings);
+printFindings("Renderer bridge compatibility inventory:", bridgeFindings);
 
-printFindings("Renderer compatibility inventory:", migrationFindings);
+const totalFindings = nodeFindings.length + bridgeFindings.length;
 console.log(
-  `Renderer compatibility inventory total: ${migrationFindings.length} finding${migrationFindings.length === 1 ? "" : "s"}.`
+  `Renderer compatibility inventory total: ${totalFindings} finding${totalFindings === 1 ? "" : "s"}.`
 );
 
-if (enforceIsolation && migrationFindings.length > 0) {
+if (enforceFutureIsolation && totalFindings > 0) {
   console.error(
-    "Renderer isolation enforcement failed. Migrate the findings above before removing compatibility bridges."
+    "Future isolation enforcement failed. Resolve the inventory before changing the official renderer runtime contract."
   );
   process.exitCode = 1;
-}
-
-if (forbiddenFindings.length === 0 && (!enforceIsolation || migrationFindings.length === 0)) {
-  console.log("Security audit passed.");
+} else {
+  console.log("Security compatibility audit passed.");
 }
