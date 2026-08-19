@@ -64,7 +64,7 @@ jobs:
       # These tests are intentionally lightweight so security boundary changes fail fast
       # before CI spends time building the full Electron package.
       - name: Test security boundaries
-        run: node --test electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js
+        run: node --test electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js electron/preload.api.test.js
 
       - name: Build
         run: yarn run build
