@@ -33,12 +33,14 @@ jobs:
         run: node scripts/security-audit.cjs
 
       # Syntax-check the files on the Electron privilege boundary before the full build.
-      # A malformed preload is much easier to diagnose here than as a blank window later.
+      # A malformed preload or recovery handler is much easier to diagnose here than as a
+      # blank window or missing recovery action later in the packaged application.
       - name: Check Electron boundary syntax
         run: |
           node --check electron/preload.js
           node --check electron/modules/preload-bridge.js
           node --check electron/modules/renderer-network.js
+          node --check electron/modules/recovery.js
           node --check electron/modules/security.js
           node --check electron/modules/window.js
           node --check scripts/dev-smoke-test.cjs
