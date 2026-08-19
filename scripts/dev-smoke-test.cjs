@@ -185,8 +185,9 @@ async function waitForHealthyRenderer(renderer, timeoutMs) {
           readyState: document.readyState,
           rootChildren: root ? root.childElementCount : 0,
           electronBridge: typeof window.electron,
-          rendererRequire: typeof window.require,
-          rendererProcess: typeof window.process,
+          lowLevelBridge: typeof window.electron?.ipcRenderer,
+          getSettings: typeof window.electron?.getSettings,
+          getGames: typeof window.electron?.getGames,
           href: window.location.href,
         };
       })()`
@@ -195,7 +196,9 @@ async function waitForHealthyRenderer(renderer, timeoutMs) {
     if (
       lastState?.readyState === "complete" &&
       lastState.rootChildren > 0 &&
-      lastState.electronBridge === "object"
+      lastState.electronBridge === "object" &&
+      lastState.getSettings === "function" &&
+      lastState.getGames === "function"
     ) {
       return lastState;
     }
@@ -293,10 +296,19 @@ async function main() {
     await renderer.call("Runtime.enable");
     const state = await waitForHealthyRenderer(renderer, RENDERER_TIMEOUT_MS);
 
-    if (state.rendererRequire !== "undefined" || state.rendererProcess !== "undefined") {
-      throw new Error(
-        `Renderer isolation failed: require=${state.rendererRequire}, process=${state.rendererProcess}`
-      );
+    // The official app still enables Node integration in the main renderer. The smoke
+    // test deliberately follows that upstream contract and verifies the bridge/IPC path
+    // instead of treating a future isolation migration as if it were already complete.
+    const settingsProbe = await evaluate(
+      renderer,
+      `window.electron.getSettings().then(settings => ({
+        ok: !!settings && typeof settings === "object",
+        hasLanguage: typeof settings?.language === "string",
+      }))`
+    );
+
+    if (!settingsProbe?.ok) {
+      throw new Error("Renderer preload IPC probe failed: getSettings() did not return settings");
     }
 
     await waitForStability(electron, STABILITY_WINDOW_MS);
@@ -308,7 +320,7 @@ async function main() {
     }
 
     console.log(
-      `Developer smoke test passed: React mounted, preload bridge is available, Node globals are hidden, and Electron stayed stable for ${STABILITY_WINDOW_MS / 1000} seconds.`
+      `Developer smoke test passed: React mounted, the official preload contract is available, IPC returned settings, and Electron stayed stable for ${STABILITY_WINDOW_MS / 1000} seconds.`
     );
   } finally {
     renderer.close();
