@@ -167,12 +167,25 @@ function requestExternalResource(rawUrl, options = {}) {
   });
 }
 
+function isAscendaraServiceHost(rawUrl) {
+  try {
+    return ALLOWED_SERVICE_HOSTS.has(new URL(rawUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function registerRendererNetworkHandlers(ipcMain) {
-  // Ascendara-owned status checks use the narrow channel above. External Sources keep a
-  // separate compatibility path so hardening one feature cannot silently break another.
-  ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) =>
-    requestAscendaraService(rawUrl, options)
-  );
+  // The preload compatibility alias still calls this channel. Keep that old contract
+  // intact: Ascendara health checks take the narrow path, while external URLs behave like
+  // the official preload's https.request helper until callers migrate naturally.
+  ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) => {
+    if (isAscendaraServiceHost(rawUrl)) {
+      return requestAscendaraService(rawUrl, options);
+    }
+    return requestExternalResource(rawUrl, options);
+  });
+
   ipcMain.handle("request-external-resource", (_event, rawUrl, options) =>
     requestExternalResource(rawUrl, options)
   );
@@ -183,6 +196,7 @@ function registerRendererNetworkHandlers(ipcMain) {
 
 module.exports = {
   ALLOWED_SERVICE_HOSTS,
+  isAscendaraServiceHost,
   normalizeExternalRequest,
   normalizeServiceRequest,
   registerRendererNetworkHandlers,
