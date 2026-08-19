@@ -9,11 +9,17 @@
 
 const { ipcMain } = require("electron");
 const security = require("./security");
+const rendererNetwork = require("./renderer-network");
 
 // Install the sender guard before requiring the feature modules below. A few of those
 // modules are large and evolve independently, so protecting ipcMain at the boundary is
 // safer than depending on every individual handler to remember the same origin check.
 security.installIpcMainGuard(ipcMain);
+
+// Register the small renderer networking surface after the global guard is active.
+// This keeps status checks out of preload without turning the main process into an
+// unrestricted HTTP proxy for renderer code.
+rendererNetwork.registerRendererNetworkHandlers(ipcMain);
 
 // Cache for lazy-loaded modules
 const lazyModuleCache = {};
@@ -54,6 +60,7 @@ module.exports = {
   // Core utilities
   logger: require("./logger"),
   encryption: require("./encryption"),
+  rendererNetwork,
   security,
   utils: require("./utils"),
 
