@@ -47,10 +47,10 @@ jobs:
           node --check scripts/dev-smoke-test.cjs
           node --check scripts/bundle-report.cjs
 
-      # These tests stay deliberately lightweight so IPC/preload regressions fail before
-      # CI spends time packaging the complete Electron application.
+      # These tests stay deliberately lightweight so IPC/preload/recovery regressions fail
+      # before CI spends time packaging the complete Electron application.
       - name: Test Electron boundaries
-        run: node --test electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js electron/preload.api.test.js
+        run: node --test electron/modules/security.test.js electron/modules/renderer-network.test.js electron/modules/preload-bridge.test.js electron/modules/recovery.test.js electron/preload.api.test.js
 
       - name: Build
         run: yarn run build
