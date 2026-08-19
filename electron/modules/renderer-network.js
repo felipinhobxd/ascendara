@@ -24,6 +24,19 @@ function normalizeServiceRequest(rawUrl, options = {}) {
     throw new Error(`Service request host is not allowed: ${parsedUrl.hostname || "unknown"}`);
   }
 
+  // This bridge exists for five root health checks, not for arbitrary requests to an
+  // otherwise trusted domain. Restricting the route makes that distinction enforceable.
+  if (
+    parsedUrl.username ||
+    parsedUrl.password ||
+    (parsedUrl.port && parsedUrl.port !== "443") ||
+    parsedUrl.pathname !== "/" ||
+    parsedUrl.search ||
+    parsedUrl.hash
+  ) {
+    throw new Error("Service request route is not allowed");
+  }
+
   const method = String(options.method || "GET").toUpperCase();
   if (!ALLOWED_METHODS.has(method)) {
     throw new Error(`Service request method is not allowed: ${method}`);
