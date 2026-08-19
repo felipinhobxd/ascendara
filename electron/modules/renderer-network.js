@@ -145,6 +145,16 @@ function isPublicIpAddress(address) {
   return true;
 }
 
+function getUrlHostname(parsedUrl) {
+  const hostname = parsedUrl.hostname.toLowerCase();
+  // WHATWG URL keeps brackets around IPv6 literals in `hostname`. net.isIP and DNS
+  // expect the bare address, so normalize it once before applying SSRF rules.
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    return hostname.slice(1, -1);
+  }
+  return hostname;
+}
+
 function normalizeCustomSourceUrl(rawUrl) {
   let parsedUrl;
   try {
@@ -163,7 +173,7 @@ function normalizeCustomSourceUrl(rawUrl) {
     throw new Error("Custom sources must use the standard HTTPS port");
   }
 
-  const hostname = parsedUrl.hostname.toLowerCase();
+  const hostname = getUrlHostname(parsedUrl);
   if (
     hostname === "localhost" ||
     BLOCKED_HOST_SUFFIXES.some(suffix => hostname.endsWith(suffix))
@@ -182,17 +192,19 @@ function normalizeCustomSourceUrl(rawUrl) {
 }
 
 async function resolvePublicCustomSourceTarget(parsedUrl) {
-  if (net.isIP(parsedUrl.hostname)) {
-    if (!isPublicIpAddress(parsedUrl.hostname)) {
+  const hostname = getUrlHostname(parsedUrl);
+
+  if (net.isIP(hostname)) {
+    if (!isPublicIpAddress(hostname)) {
       throw new Error("Custom source IP address is not public");
     }
     return {
-      address: parsedUrl.hostname,
-      family: net.isIP(parsedUrl.hostname),
+      address: hostname,
+      family: net.isIP(hostname),
     };
   }
 
-  const addresses = await dns.lookup(parsedUrl.hostname, {
+  const addresses = await dns.lookup(hostname, {
     all: true,
     verbatim: true,
   });
