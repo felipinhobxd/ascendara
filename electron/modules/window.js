@@ -3,14 +3,27 @@
  * Handles window creation, visibility, and related operations
  */
 
-const { BrowserWindow, screen, ipcMain, dialog, app } = require("electron");
+const { BrowserWindow, screen, ipcMain, dialog, app, shell } = require("electron");
 const path = require("path");
 const { isDev } = require("./config");
 const { initializeDiscordRPC, destroyDiscordRPC } = require("./discord-rpc");
 const { getSettingsManager } = require("./settings");
+const {
+  escapeHtml,
+  isAllowedAppNavigation,
+  isSafeExternalUrl,
+  isTrustedAuthUrl,
+  resolveInsideDirectory,
+} = require("./security");
 
 let mainWindowHidden = false;
 let isHandlingProtocolUrl = false;
+
+function devToolsAreAllowed() {
+  // Packaged DevTools are opt-in so a support build can still enable them without
+  // leaving every production install with a privileged debugging surface open.
+  return isDev || process.env.ASCENDARA_ENABLE_DEVTOOLS === "1";
+}
 
 /**
  * Create the main application window
@@ -43,18 +56,49 @@ function createWindow() {
     fullscreen: startInBigPicture,
     webPreferences: {
       preload: path.join(__dirname, "..", "preload.js"),
+      // The renderer still has legacy Node-dependent paths. New code should use the
+      // preload bridge; this flag can be removed once those paths are migrated.
       nodeIntegration: true,
       contextIsolation: true,
-      // Disable sandbox for Linux compatibility
+      // Linux packaging currently relies on the existing unsandboxed path. Keeping
+      // it here avoids a silent platform regression while the IPC layer is tightened.
       sandbox: false,
-      // Disable web security to allow CORS requests to external APIs
+      // A few renderer services still call remote APIs directly. We keep this for
+      // compatibility until those calls are moved behind the local proxy/main process.
       webSecurity: false,
-      // Must be explicitly true for openDevTools() to work in packaged builds
-      devTools: true,
+      devTools: devToolsAreAllowed(),
+      // These are explicit even though Electron defaults are already conservative.
+      // It makes the security assumptions visible next to the legacy flags above.
+      webviewTag: false,
+      navigateOnDragDrop: false,
+      allowRunningInsecureContent: false,
+      safeDialogs: true,
       // Prevent rendering stalls when the window is idle or in the background
       backgroundThrottling: false,
     },
   });
+
+  // Browser permissions are only useful to the local renderer. Remote OAuth pages
+  // should never inherit clipboard/media access just because they were opened by us.
+  const allowedRendererPermissions = new Set([
+    "notifications",
+    "clipboard-read",
+    "clipboard-sanitized-write",
+  ]);
+  const isAllowedPermission = (webContents, permission, requestingOrigin) => {
+    const sourceUrl = requestingOrigin || webContents?.getURL() || "";
+    return isAllowedAppNavigation(sourceUrl) && allowedRendererPermissions.has(permission);
+  };
+
+  mainWindow.webContents.session.setPermissionCheckHandler(
+    (webContents, permission, requestingOrigin) =>
+      isAllowedPermission(webContents, permission, requestingOrigin)
+  );
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (webContents, permission, callback, details) => {
+      callback(isAllowedPermission(webContents, permission, details?.requestingUrl));
+    }
+  );
 
   // Width, Height
   mainWindow.setMinimumSize(600, 400);
@@ -78,7 +122,11 @@ function createWindow() {
   // Handle load failures (e.g., local server not running)
   mainWindow.webContents.on("did-fail-load", (event, errorCode, errorDescription) => {
     console.error(`Failed to load: ${errorCode} - ${errorDescription}`);
-    // Show a helpful error page instead of white screen
+    const safeErrorDescription = escapeHtml(errorDescription);
+    const safeErrorCode = escapeHtml(errorCode);
+
+    // Show a helpful error page instead of white screen. The error text is escaped
+    // because this fallback is assembled as HTML rather than rendered by React.
     mainWindow.loadURL(`data:text/html,
       <html>
         <head>
@@ -91,7 +139,7 @@ function createWindow() {
         </head>
         <body>
           <h1>Failed to Load Ascendara</h1>
-          <p>Error: ${errorDescription} (${errorCode})</p>
+          <p>Error: ${safeErrorDescription} (${safeErrorCode})</p>
           <p>This may be caused by:</p>
           <p>• Missing Visual C++ Redistributables - <a href="https://aka.ms/vs/17/release/vc_redist.x64.exe" style="color: #3b82f6;">Download here</a></p>
           <p>• Antivirus blocking the app</p>
@@ -102,19 +150,51 @@ function createWindow() {
     `);
   });
 
+  const handleUnexpectedNavigation = (event, url) => {
+    if (isAllowedAppNavigation(url)) return;
+
+    event.preventDefault();
+
+    // Normal web links belong in the user's browser. Everything else is simply
+    // blocked so file:, javascript:, and custom schemes cannot replace the app UI.
+    if (isSafeExternalUrl(url)) {
+      shell.openExternal(url).catch(error => {
+        console.error("Failed to open external URL:", error);
+      });
+    } else {
+      console.warn("Blocked unsafe navigation attempt:", url);
+    }
+  };
+
+  mainWindow.webContents.on("will-navigate", handleUnexpectedNavigation);
+  mainWindow.webContents.on("will-redirect", handleUnexpectedNavigation);
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // Allow Firebase/Google auth popups
-    if (
-      url.includes("accounts.google.com") ||
-      url.includes("firebaseapp.com") ||
-      url.includes("googleapis.com")
-    ) {
-      return { action: "allow" };
+    if (isTrustedAuthUrl(url)) {
+      // OAuth needs a real child window, but it does not need access to Node or the
+      // Ascendara preload bridge. Keeping it isolated limits what remote content can do.
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
+            webSecurity: true,
+            devTools: isDev,
+          },
+        },
+      };
     }
-    // Open other external links in system browser
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-      require("electron").shell.openExternal(url);
+
+    if (isSafeExternalUrl(url)) {
+      shell.openExternal(url).catch(error => {
+        console.error("Failed to open external URL:", error);
+      });
+    } else {
+      console.warn("Blocked unsafe window open attempt:", url);
     }
+
     return { action: "deny" };
   });
 
@@ -252,8 +332,14 @@ async function showErrorDialog(title, message) {
  * Register window-related IPC handlers
  */
 function registerWindowHandlers() {
-  // Open DevTools (available in production on Linux for debugging)
   ipcMain.handle("open-devtools", () => {
+    if (!devToolsAreAllowed()) {
+      console.warn(
+        "DevTools are disabled in packaged builds. Set ASCENDARA_ENABLE_DEVTOOLS=1 for support debugging."
+      );
+      return false;
+    }
+
     const mainWindow = BrowserWindow.getAllWindows()[0];
     if (mainWindow) {
       if (mainWindow.webContents.isDevToolsOpened()) {
@@ -261,7 +347,9 @@ function registerWindowHandlers() {
       } else {
         mainWindow.webContents.openDevTools({ mode: "detach" });
       }
+      return true;
     }
+    return false;
   });
 
   // Minimize the window
@@ -372,13 +460,16 @@ function registerWindowHandlers() {
   // Get asset path
   ipcMain.handle("get-asset-path", (_, filename) => {
     const fs = require("fs-extra");
-    let assetPath;
-    if (!app.isPackaged) {
-      // In development
-      assetPath = path.join(__dirname, "../../src/public", filename);
-    } else {
-      // In production
-      assetPath = path.join(process.resourcesPath, "public", filename);
+    const publicDirectory = !app.isPackaged
+      ? path.join(__dirname, "../../src/public")
+      : path.join(process.resourcesPath, "public");
+    const assetPath = resolveInsideDirectory(publicDirectory, filename);
+
+    // The renderer only needs public assets here. Rejecting traversal also keeps a
+    // compromised UI from turning this convenience handler into a general file reader.
+    if (!assetPath) {
+      console.warn("Blocked asset path outside the public directory:", filename);
+      return null;
     }
 
     if (!fs.existsSync(assetPath)) {
@@ -394,13 +485,14 @@ function registerWindowHandlers() {
   // Get audio asset as base64 data URL
   ipcMain.handle("get-audio-asset", (_, filename) => {
     const fs = require("fs-extra");
-    let assetPath;
-    if (!app.isPackaged) {
-      // In development
-      assetPath = path.join(__dirname, "../../src/public", filename);
-    } else {
-      // In production
-      assetPath = path.join(process.resourcesPath, "public", filename);
+    const publicDirectory = !app.isPackaged
+      ? path.join(__dirname, "../../src/public")
+      : path.join(process.resourcesPath, "public");
+    const assetPath = resolveInsideDirectory(publicDirectory, filename);
+
+    if (!assetPath) {
+      console.warn("Blocked audio path outside the public directory:", filename);
+      return null;
     }
 
     if (!fs.existsSync(assetPath)) {
