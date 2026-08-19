@@ -185,11 +185,9 @@ export function SettingsProvider({ children }) {
       }));
     };
 
-    window.electron.ipcRenderer.on("settings-updated", handleSettingsChange);
-
-    return () => {
-      window.electron.ipcRenderer.off("settings-updated", handleSettingsChange);
-    };
+    // The context should consume application events, not Electron primitives. The
+    // preload keeps the historical (event, data) callback shape while hiding ipcRenderer.
+    return window.electron.onSettingsChanged(handleSettingsChange);
   }, []);
 
   return (
