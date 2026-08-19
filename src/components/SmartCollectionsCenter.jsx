@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Clock3, Gamepad2, Layers3, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +18,7 @@ function normalizePlayTime(value) {
 }
 
 const SmartCollectionsCenter = () => {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [games, setGames] = useState([]);
   const [recentGames, setRecentGames] = useState([]);
@@ -140,15 +142,12 @@ const SmartCollectionsCenter = () => {
 
   const openGame = game => {
     setOpen(false);
-    window.location.hash = "#/gamescreen";
-    // GameScreen reads navigation state in the normal React route flow. Dispatching this
-    // event lets the persistent search layer hand the selected object to the router-aware
-    // GlobalSearch command without adding another library data store.
-    window.dispatchEvent(
-      new CustomEvent("ascendara:open-library-game", {
-        detail: { game },
-      })
-    );
+    // This matches Ascendara's existing library search behavior exactly, so GameScreen
+    // receives the same object shape regardless of whether the game came from Library,
+    // Ctrl+K, or a Smart Collection.
+    navigate("/gamescreen", {
+      state: { gameData: game },
+    });
   };
 
   return (
