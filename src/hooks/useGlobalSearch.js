@@ -3,6 +3,7 @@ import { useSearch } from "@/context/SearchContext";
 import { useLocation } from "react-router-dom";
 
 const SYSTEM_CENTER_EVENT = "ascendara:open-system-center";
+const GAME_PROFILES_EVENT = "ascendara:open-game-profiles";
 
 const openSystemCenter = tab => {
   window.dispatchEvent(
@@ -52,6 +53,14 @@ export const useGlobalSearch = () => {
         description: "Safe UI Mode, cache recovery and developer diagnostics",
         badge: "Recovery",
         onSelect: () => openSystemCenter("recovery"),
+      },
+      {
+        id: "game-profiles",
+        type: "commands",
+        label: "Manage Game Profiles",
+        description: "Launch commands, backups, UMU and custom save paths per game",
+        badge: "Games",
+        onSelect: () => window.dispatchEvent(new CustomEvent(GAME_PROFILES_EVENT)),
       },
       {
         id: "big-picture",
