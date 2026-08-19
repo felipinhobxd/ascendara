@@ -305,16 +305,28 @@ async function requestCustomSource(rawUrl, redirectCount = 0) {
   });
 }
 
-function registerRendererNetworkHandlers(ipcMain) {
-  // Keep this API intentionally narrow. It exists for Ascendara's health checks,
-  // not as a general-purpose way for renderer code to bypass browser networking.
-  ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) =>
-    requestAscendaraService(rawUrl, options)
-  );
+function isAscendaraServiceHost(rawUrl) {
+  try {
+    return ALLOWED_SERVICE_HOSTS.has(new URL(rawUrl).hostname);
+  } catch {
+    return false;
+  }
+}
 
-  // Custom Sources need user-selected public URLs, so a hostname allowlist would defeat
-  // the feature. The handler instead enforces HTTPS and pins a DNS-validated public IP,
-  // which preserves flexibility without turning Electron into an SSRF primitive.
+function registerRendererNetworkHandlers(ipcMain) {
+  // `request-ascendara-service` is still used by one older Custom Sources caller. Keep
+  // that compatibility route safe by sending non-Ascendara hosts through the exact same
+  // public-HTTPS/SSRF checks as the dedicated custom-source channel. Official service
+  // hosts still use the much narrower root-only health-check policy.
+  ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) => {
+    if (isAscendaraServiceHost(rawUrl)) {
+      return requestAscendaraService(rawUrl, options);
+    }
+    return requestCustomSource(rawUrl);
+  });
+
+  // New code should use this channel directly. Once gameService is split into smaller
+  // modules, the temporary compatibility branch above can be deleted cleanly.
   ipcMain.handle("fetch-custom-source", (_event, rawUrl) => requestCustomSource(rawUrl));
 }
 
