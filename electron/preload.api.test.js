@@ -49,9 +49,9 @@ test("preload exposes the critical Ascendara renderer APIs", () => {
   assert.equal(typeof exposed.electron, "object");
   assert.equal(typeof exposed.qbittorrentApi, "object");
 
-  // This list intentionally focuses on APIs whose accidental removal would break
-  // startup, updates, downloads, settings, or the Stage 3 isolation migration. It is
-  // small enough to maintain without turning the test into a duplicate of preload.js.
+  // These functions cover the official startup, settings, library, download, update,
+  // translation, and External Sources contracts. Keeping this list explicit makes an
+  // accidental preload rewrite fail before it can turn into a distant runtime bug.
   const requiredFunctions = [
     "getSettings",
     "saveSettings",
@@ -72,6 +72,7 @@ test("preload exposes the critical Ascendara renderer APIs", () => {
     "onSteamripCookieReceived",
     "requestAscendaraService",
     "fetchCustomSource",
+    "request",
   ];
 
   for (const name of requiredFunctions) {
