@@ -1,87 +1,101 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Gamepad2, RefreshCw, Save, ShieldCheck, FolderOpen, History } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  FolderOpen,
+  Gamepad2,
+  History,
+  RefreshCw,
+  Save,
+  ShieldCheck,
+} from "lucide-react";
 import { toast } from "sonner";
+import GamesBackupDialog from "@/components/GamesBackupDialog";
+import {
+  FeatureCenterDialog,
+  FeatureSection,
+  FeatureState,
+} from "@/components/feature-centers/FeatureCenterPrimitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import GamesBackupDialog from "@/components/GamesBackupDialog";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { useLanguage } from "@/context/LanguageContext";
+import { useFeatureCenterDialog } from "@/hooks/useFeatureCenterDialog";
+import { FEATURE_CENTER_EVENTS } from "@/lib/featureCenterEvents";
+import {
+  getGameName,
+  loadGameProfile,
+  loadGameProfileCatalog,
+  saveGameProfile,
+} from "@/services/gameProfileService";
 
-const GAME_PROFILES_EVENT = "ascendara:open-game-profiles";
+const EMPTY_PROFILE = {
+  launchCommands: "",
+  autoBackup: false,
+  umuId: "",
+  savePaths: [],
+};
 
-function getGameName(game) {
-  return game?.game || game?.name || "";
-}
-
-function normalizeGame(game, isCustom) {
-  return {
-    ...game,
-    isCustom: Boolean(isCustom || game?.isCustom || game?.custom),
-  };
+function profilesMatch(left, right) {
+  return JSON.stringify(left || EMPTY_PROFILE) === JSON.stringify(right || EMPTY_PROFILE);
 }
 
 const GameProfilesCenter = () => {
-  const [open, setOpen] = useState(false);
+  const { t } = useLanguage();
+  const requestedGameRef = useRef(null);
   const [games, setGames] = useState([]);
   const [selectedKey, setSelectedKey] = useState("");
   const [loadingGames, setLoadingGames] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [backupOpen, setBackupOpen] = useState(false);
   const [isLinux, setIsLinux] = useState(false);
-  const [profile, setProfile] = useState({
-    launchCommands: "",
-    autoBackup: false,
-    umuId: "",
-    savePaths: [],
-  });
+  const [profile, setProfile] = useState(EMPTY_PROFILE);
+  const [savedProfile, setSavedProfile] = useState(EMPTY_PROFILE);
 
-  useEffect(() => {
-    const handleOpen = event => {
-      setOpen(true);
-      const requestedGame = event?.detail?.game;
-      if (requestedGame) setSelectedKey(String(requestedGame));
-    };
-
-    window.addEventListener(GAME_PROFILES_EVENT, handleOpen);
-    return () => window.removeEventListener(GAME_PROFILES_EVENT, handleOpen);
+  const handleOpenEvent = useCallback(detail => {
+    requestedGameRef.current = detail?.game || null;
   }, []);
+  const [open, setOpen] = useFeatureCenterDialog(
+    FEATURE_CENTER_EVENTS.profiles,
+    handleOpenEvent
+  );
+
+  const isDirty = useMemo(
+    () => !profilesMatch(profile, savedProfile),
+    [profile, savedProfile]
+  );
 
   const loadGames = useCallback(async () => {
     setLoadingGames(true);
+    setLoadError("");
     try {
-      const [installed, custom, linux] = await Promise.all([
-        window.electron.getGames(),
-        window.electron.getCustomGames(),
-        window.electron.isOnLinux(),
-      ]);
-
-      const merged = [
-        ...(Array.isArray(installed) ? installed.map(game => normalizeGame(game, false)) : []),
-        ...(Array.isArray(custom) ? custom.map(game => normalizeGame(game, true)) : []),
-      ];
-
-      const seen = new Set();
-      const unique = merged.filter(game => {
-        const key = `${game.isCustom ? "custom" : "installed"}:${getGameName(game)}`;
-        if (!getGameName(game) || seen.has(key)) return false;
-        seen.add(key);
-        game.__profileKey = key;
-        return true;
+      const catalog = await loadGameProfileCatalog();
+      setGames(catalog.games);
+      setIsLinux(catalog.isLinux);
+      setSelectedKey(current => {
+        const requested = requestedGameRef.current;
+        requestedGameRef.current = null;
+        if (requested) {
+          const requestedName =
+            typeof requested === "string" ? requested : getGameName(requested);
+          const match = catalog.games.find(game => getGameName(game) === requestedName);
+          if (match) return match.__profileKey;
+        }
+        if (catalog.games.some(game => game.__profileKey === current)) return current;
+        return catalog.games[0]?.__profileKey || "";
       });
-
-      unique.sort((a, b) => getGameName(a).localeCompare(getGameName(b)));
-      setGames(unique);
-      setIsLinux(Boolean(linux));
-      if (!selectedKey && unique.length > 0) setSelectedKey(unique[0].__profileKey);
     } catch (error) {
       console.error("[GameProfiles] Failed to load games:", error);
-      toast.error("Could not load installed games", { description: error.message });
+      setGames([]);
+      setSelectedKey("");
+      setLoadError(error.message || t("featureCenters.profiles.loadGamesError"));
     } finally {
       setLoadingGames(false);
     }
-  }, [selectedKey]);
+  }, [t]);
 
   useEffect(() => {
     if (open) loadGames();
@@ -92,84 +106,82 @@ const GameProfilesCenter = () => {
     [games, selectedKey]
   );
 
-  const loadProfile = useCallback(async game => {
-    if (!game) return;
-    setLoadingProfile(true);
-    const gameName = getGameName(game);
+  const loadProfile = useCallback(
+    async game => {
+      if (!game) {
+        setProfile(EMPTY_PROFILE);
+        setSavedProfile(EMPTY_PROFILE);
+        return;
+      }
 
-    try {
-      const [launchCommands, autoBackup, savePathsResult, umuId] = await Promise.all([
-        window.electron.getLaunchCommands(gameName, game.isCustom).catch(() => ""),
-        window.electron.isGameAutoBackupsEnabled(gameName, game.isCustom).catch(() => false),
-        window.electron.getCustomSavePaths(gameName, game.isCustom).catch(() => ({
-          success: false,
-          paths: [],
-        })),
-        isLinux ? window.electron.umuGetGameId(gameName).catch(() => "") : Promise.resolve(""),
-      ]);
-
-      setProfile({
-        launchCommands:
-          typeof launchCommands === "string"
-            ? launchCommands
-            : launchCommands?.launchCommands || launchCommands?.value || "",
-        autoBackup: Boolean(autoBackup),
-        umuId:
-          typeof umuId === "string" || typeof umuId === "number"
-            ? String(umuId || "")
-            : String(umuId?.id || umuId?.umuId || ""),
-        savePaths: savePathsResult?.success ? savePathsResult.paths || [] : [],
-      });
-    } catch (error) {
-      console.error("[GameProfiles] Failed to load profile:", error);
-      toast.error("Could not load game profile", { description: error.message });
-    } finally {
-      setLoadingProfile(false);
-    }
-  }, [isLinux]);
+      setLoadingProfile(true);
+      try {
+        const nextProfile = await loadGameProfile(game, isLinux);
+        setProfile(nextProfile);
+        setSavedProfile(nextProfile);
+      } catch (error) {
+        console.error("[GameProfiles] Failed to load profile:", error);
+        toast.error(t("featureCenters.profiles.loadProfileError"), {
+          description: error.message,
+        });
+      } finally {
+        setLoadingProfile(false);
+      }
+    },
+    [isLinux, t]
+  );
 
   useEffect(() => {
     if (open && selectedGame) loadProfile(selectedGame);
   }, [open, selectedGame, loadProfile]);
 
+  const confirmDiscard = useCallback(
+    gameName => {
+      if (!isDirty) return true;
+      return window.confirm(
+        t("featureCenters.profiles.discardConfirm", {
+          game: gameName || getGameName(selectedGame),
+        })
+      );
+    },
+    [isDirty, selectedGame, t]
+  );
+
+  const selectGame = nextKey => {
+    if (nextKey === selectedKey) return;
+    if (!confirmDiscard(getGameName(selectedGame))) return;
+    setSelectedKey(nextKey);
+  };
+
+  const handleOpenChange = nextOpen => {
+    if (!nextOpen && isDirty) {
+      if (!window.confirm(t("featureCenters.profiles.closeConfirm"))) return;
+    }
+    setOpen(nextOpen);
+  };
+
+  const refreshCatalog = () => {
+    if (!confirmDiscard(getGameName(selectedGame))) return;
+    loadGames();
+  };
+
   const saveProfile = async () => {
-    if (!selectedGame) return;
+    if (!selectedGame || !isDirty) return;
     const gameName = getGameName(selectedGame);
     setSaving(true);
 
     try {
-      await window.electron.saveLaunchCommands(
-        gameName,
-        profile.launchCommands,
-        selectedGame.isCustom
-      );
-
-      if (profile.autoBackup) {
-        await window.electron.enableGameAutoBackups(gameName, selectedGame.isCustom);
-      } else {
-        await window.electron.disableGameAutoBackups(gameName, selectedGame.isCustom);
-      }
-
-      const savePaths = profile.savePaths.map(path => path.trim()).filter(Boolean);
-      const savePathsResult = await window.electron.setCustomSavePaths(
-        gameName,
-        selectedGame.isCustom,
-        savePaths
-      );
-      if (savePathsResult && savePathsResult.success === false) {
-        throw new Error(savePathsResult.error || "Could not save custom save paths");
-      }
-
-      if (isLinux && profile.umuId.trim()) {
-        await window.electron.umuSetGameId(gameName, profile.umuId.trim());
-      }
-
-      toast.success("Game profile saved", {
-        description: `${gameName} will use these settings the next time it launches.`,
+      const normalized = await saveGameProfile(selectedGame, profile, isLinux);
+      setProfile(normalized);
+      setSavedProfile(normalized);
+      toast.success(t("featureCenters.profiles.saved"), {
+        description: t("featureCenters.profiles.savedDescription", { game: gameName }),
       });
     } catch (error) {
       console.error("[GameProfiles] Failed to save profile:", error);
-      toast.error("Could not save game profile", { description: error.message });
+      toast.error(t("featureCenters.profiles.saveError"), {
+        description: error.message,
+      });
     } finally {
       setSaving(false);
     }
@@ -181,117 +193,164 @@ const GameProfilesCenter = () => {
       if (!result?.path) return;
       setProfile(current => ({
         ...current,
-        savePaths: current.savePaths.map((path, itemIndex) =>
-          itemIndex === index ? result.path : path
+        savePaths: current.savePaths.map((value, itemIndex) =>
+          itemIndex === index ? result.path : value
         ),
       }));
     } catch (error) {
-      toast.error("Could not open folder picker", { description: error.message });
+      toast.error(t("featureCenters.profiles.pickerError"), {
+        description: error.message,
+      });
     }
   };
 
   return (
     <>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[86vh] max-w-4xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-xl">
-              <Gamepad2 className="h-6 w-6 text-primary" /> Game Profiles
-            </DialogTitle>
-          </DialogHeader>
-
+      <FeatureCenterDialog
+        open={open}
+        onOpenChange={handleOpenChange}
+        title={t("featureCenters.profiles.title")}
+        description={t("featureCenters.profiles.description")}
+        icon={Gamepad2}
+        maxWidth="max-w-4xl"
+      >
+        <div className="h-full overflow-y-auto p-4 sm:p-6">
           <div className="space-y-5">
-            <div className="flex items-center gap-3">
-              <select
-                value={selectedKey}
-                onChange={event => setSelectedKey(event.target.value)}
-                className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground"
-              >
-                {games.map(game => (
-                  <option key={game.__profileKey} value={game.__profileKey}>
-                    {getGameName(game)}{game.isCustom ? " (Custom)" : ""}
-                  </option>
-                ))}
-              </select>
-              <Button variant="outline" onClick={loadGames} disabled={loadingGames}>
-                <RefreshCw className={`mr-2 h-4 w-4 ${loadingGames ? "animate-spin" : ""}`} />
-                Refresh
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <select
+                  value={selectedKey}
+                  onChange={event => selectGame(event.target.value)}
+                  disabled={loadingGames || games.length === 0}
+                  aria-label={t("featureCenters.profiles.title")}
+                  className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {games.map(game => (
+                    <option key={game.__profileKey} value={game.__profileKey}>
+                      {getGameName(game)}
+                      {game.isCustom
+                        ? ` (${t("featureCenters.profiles.customSuffix")})`
+                        : ""}
+                    </option>
+                  ))}
+                </select>
+                {isDirty && (
+                  <Badge variant="outline" className="hidden shrink-0 sm:inline-flex">
+                    {t("featureCenters.profiles.unsaved")}
+                  </Badge>
+                )}
+              </div>
+              <Button variant="outline" onClick={refreshCatalog} disabled={loadingGames}>
+                <RefreshCw
+                  className={`mr-2 h-4 w-4 ${loadingGames ? "animate-spin" : ""}`}
+                />
+                {t("featureCenters.profiles.refresh")}
               </Button>
             </div>
 
-            {!selectedGame ? (
-              <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-                No installed games were found.
+            {isDirty && (
+              <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
+                <div>
+                  <p className="font-medium text-foreground">
+                    {t("featureCenters.profiles.unsaved")}
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t("featureCenters.profiles.unsavedDescription")}
+                  </p>
+                </div>
               </div>
+            )}
+
+            {loadError ? (
+              <FeatureState
+                icon={AlertTriangle}
+                title={t("featureCenters.profiles.loadGamesError")}
+                description={loadError}
+                action={{
+                  label: t("featureCenters.common.retry"),
+                  onClick: loadGames,
+                }}
+              />
+            ) : loadingGames && games.length === 0 ? (
+              <FeatureState
+                icon={RefreshCw}
+                title={t("featureCenters.common.loading")}
+              />
+            ) : !selectedGame ? (
+              <FeatureState
+                icon={Gamepad2}
+                title={t("featureCenters.profiles.noGames")}
+              />
             ) : loadingProfile ? (
-              <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-                Loading profile…
-              </div>
+              <FeatureState
+                icon={RefreshCw}
+                title={t("featureCenters.profiles.loading")}
+              />
             ) : (
               <>
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <Label htmlFor="profile-launch-commands" className="font-medium">
-                    Launch commands
+                <FeatureSection
+                  title={t("featureCenters.profiles.launchCommands")}
+                  description={t("featureCenters.profiles.launchCommandsDescription")}
+                >
+                  <Label htmlFor="profile-launch-commands" className="sr-only">
+                    {t("featureCenters.profiles.launchCommands")}
                   </Label>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Uses Ascendara's existing per-game launch command field.
-                  </p>
                   <Input
                     id="profile-launch-commands"
-                    className="mt-3 font-mono"
+                    className="font-mono"
                     value={profile.launchCommands}
                     onChange={event =>
-                      setProfile(current => ({ ...current, launchCommands: event.target.value }))
+                      setProfile(current => ({
+                        ...current,
+                        launchCommands: event.target.value,
+                      }))
                     }
-                    placeholder="Leave empty to use the game's default launch behavior"
+                    placeholder={t("featureCenters.profiles.launchCommandsPlaceholder")}
                   />
-                </div>
+                </FeatureSection>
 
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <div className="flex items-start justify-between gap-5">
-                    <div>
-                      <h3 className="font-medium text-foreground">Automatic save backups</h3>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        Uses the same Ludusavi auto-backup setting already supported by Ascendara.
-                      </p>
-                    </div>
+                <FeatureSection
+                  title={t("featureCenters.profiles.autoBackup")}
+                  description={t("featureCenters.profiles.autoBackupDescription")}
+                  actions={
                     <Switch
                       checked={profile.autoBackup}
                       onCheckedChange={value =>
-                        setProfile(current => ({ ...current, autoBackup: Boolean(value) }))
+                        setProfile(current => ({
+                          ...current,
+                          autoBackup: Boolean(value),
+                        }))
                       }
+                      aria-label={t("featureCenters.profiles.autoBackup")}
                     />
-                  </div>
-                </div>
+                  }
+                />
 
                 {isLinux && (
-                  <div className="rounded-xl border border-border bg-card p-5">
-                    <Label htmlFor="profile-umu-id" className="font-medium">
-                      UMU game ID
+                  <FeatureSection
+                    title={t("featureCenters.profiles.umuId")}
+                    description={t("featureCenters.profiles.umuIdDescription")}
+                  >
+                    <Label htmlFor="profile-umu-id" className="sr-only">
+                      {t("featureCenters.profiles.umuId")}
                     </Label>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Overrides the game-specific UMU mapping without changing global Proton settings.
-                    </p>
                     <Input
                       id="profile-umu-id"
-                      className="mt-3 font-mono"
+                      className="font-mono"
                       value={profile.umuId}
                       onChange={event =>
                         setProfile(current => ({ ...current, umuId: event.target.value }))
                       }
-                      placeholder="Optional"
+                      placeholder={t("featureCenters.profiles.optional")}
                     />
-                  </div>
+                  </FeatureSection>
                 )}
 
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h3 className="font-medium text-foreground">Custom save paths</h3>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        These paths are passed to Ascendara's existing backup integration.
-                      </p>
-                    </div>
+                <FeatureSection
+                  title={t("featureCenters.profiles.savePaths")}
+                  description={t("featureCenters.profiles.savePathsDescription")}
+                  actions={
                     <Button
                       size="sm"
                       variant="outline"
@@ -302,13 +361,16 @@ const GameProfilesCenter = () => {
                         }))
                       }
                     >
-                      Add path
+                      {t("featureCenters.common.addPath")}
                     </Button>
-                  </div>
-
-                  <div className="mt-4 space-y-2">
+                  }
+                >
+                  <div className="space-y-2">
                     {profile.savePaths.map((path, index) => (
-                      <div key={`${index}-${path}`} className="flex gap-2">
+                      <div
+                        key={index}
+                        className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+                      >
                         <Input
                           className="font-mono text-xs"
                           value={path}
@@ -320,53 +382,66 @@ const GameProfilesCenter = () => {
                               ),
                             }))
                           }
-                          placeholder="Save directory"
+                          placeholder={t("featureCenters.profiles.saveDirectory")}
                         />
-                        <Button size="icon" variant="outline" onClick={() => browseSavePath(index)}>
-                          <FolderOpen className="h-4 w-4" />
+                        <Button
+                          variant="outline"
+                          onClick={() => browseSavePath(index)}
+                          aria-label={t("featureCenters.common.browse")}
+                        >
+                          <FolderOpen className="mr-2 h-4 w-4 sm:mr-0" />
+                          <span className="sm:sr-only">
+                            {t("featureCenters.common.browse")}
+                          </span>
                         </Button>
                         <Button
-                          size="sm"
                           variant="ghost"
                           onClick={() =>
                             setProfile(current => ({
                               ...current,
-                              savePaths: current.savePaths.filter((_, itemIndex) => itemIndex !== index),
+                              savePaths: current.savePaths.filter(
+                                (_, itemIndex) => itemIndex !== index
+                              ),
                             }))
                           }
                         >
-                          Remove
+                          {t("featureCenters.common.remove")}
                         </Button>
                       </div>
                     ))}
                     {profile.savePaths.length === 0 && (
                       <p className="text-sm text-muted-foreground">
-                        No custom save paths. Ludusavi will use its normal detection.
+                        {t("featureCenters.profiles.noSavePaths")}
                       </p>
                     )}
                   </div>
-                </div>
+                </FeatureSection>
 
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 p-4">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <ShieldCheck className="h-4 w-4 text-primary" />
-                    Profile settings reuse Ascendara's official per-game APIs.
+                <div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                    <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                    <span>{t("featureCenters.profiles.compatibilityNote")}</span>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="grid gap-2 sm:flex">
                     <Button variant="outline" onClick={() => setBackupOpen(true)}>
-                      <History className="mr-2 h-4 w-4" /> Backup Timeline
+                      <History className="mr-2 h-4 w-4" />
+                      {t("featureCenters.profiles.backupTimeline")}
                     </Button>
-                    <Button onClick={saveProfile} disabled={saving}>
+                    <Button onClick={saveProfile} disabled={saving || !isDirty}>
                       <Save className="mr-2 h-4 w-4" />
-                      {saving ? "Saving…" : "Save profile"}
+                      {t(
+                        saving
+                          ? "featureCenters.profiles.saving"
+                          : "featureCenters.profiles.saveProfile"
+                      )}
                     </Button>
                   </div>
                 </div>
               </>
             )}
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      </FeatureCenterDialog>
 
       {selectedGame && (
         <GamesBackupDialog
@@ -379,5 +454,4 @@ const GameProfilesCenter = () => {
   );
 };
 
-export { GAME_PROFILES_EVENT };
 export default GameProfilesCenter;
