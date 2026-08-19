@@ -24,6 +24,27 @@ test("renderer service requests only accept official Ascendara HTTPS hosts", () 
   );
 });
 
+test("renderer service requests only accept the exact health-check route", () => {
+  assert.doesNotThrow(() => normalizeServiceRequest("https://api.ascendara.app/"));
+  assert.doesNotThrow(() => normalizeServiceRequest("https://api.ascendara.app:443/"));
+  assert.throws(
+    () => normalizeServiceRequest("https://api.ascendara.app/health"),
+    /route is not allowed/
+  );
+  assert.throws(
+    () => normalizeServiceRequest("https://api.ascendara.app/?debug=1"),
+    /route is not allowed/
+  );
+  assert.throws(
+    () => normalizeServiceRequest("https://user:pass@api.ascendara.app/"),
+    /route is not allowed/
+  );
+  assert.throws(
+    () => normalizeServiceRequest("https://api.ascendara.app:8443/"),
+    /route is not allowed/
+  );
+});
+
 test("renderer service requests are read-only and clamp timeouts", () => {
   assert.equal(
     normalizeServiceRequest("https://api.ascendara.app/", {
