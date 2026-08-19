@@ -1,6 +1,11 @@
 import { useEffect } from "react";
 import { useSearch } from "@/context/SearchContext";
 import { useLocation } from "react-router-dom";
+import { toast } from "sonner";
+import {
+  createSettingsRecoveryPoint,
+  restoreLatestSettingsRecoveryPoint,
+} from "@/services/recoveryService";
 
 const SYSTEM_CENTER_EVENT = "ascendara:open-system-center";
 const GAME_PROFILES_EVENT = "ascendara:open-game-profiles";
@@ -17,6 +22,26 @@ const openSystemCenter = tab => {
 export const useGlobalSearch = () => {
   const { openSearch, registerSearchable, unregisterSearchable } = useSearch();
   const location = useLocation();
+
+  useEffect(() => {
+    // The official updater emits update-ready before the user can install the new build.
+    // Capturing settings here gives Recovery a stable point without changing the updater's
+    // download/install flow or trying to maintain our own copy of the application binary.
+    const handleUpdateReady = async () => {
+      try {
+        const point = await createSettingsRecoveryPoint("before-update");
+        console.log("[Recovery] Created pre-update settings point:", point?.id);
+      } catch (error) {
+        console.warn("[Recovery] Could not create pre-update settings point:", error);
+      }
+    };
+
+    const unsubscribe = window.electron?.onUpdateReady?.(handleUpdateReady);
+    return () => {
+      if (typeof unsubscribe === "function") unsubscribe();
+      else window.electron?.removeUpdateReadyListener?.(handleUpdateReady);
+    };
+  }, []);
 
   useEffect(() => {
     // Commands live in the same search registry as games and settings, but stay in their
@@ -51,9 +76,42 @@ export const useGlobalSearch = () => {
         id: "recovery-center",
         type: "commands",
         label: "Open Recovery tools",
-        description: "Safe UI Mode, cache recovery and developer diagnostics",
+        description: "Safe UI Mode, recovery points, cache recovery and diagnostics",
         badge: "Recovery",
         onSelect: () => openSystemCenter("recovery"),
+      },
+      {
+        id: "create-recovery-point",
+        type: "commands",
+        label: "Create Settings Recovery Point",
+        description: "Save the current Ascendara settings outside Chromium browser storage",
+        badge: "Recovery",
+        onSelect: () => {
+          createSettingsRecoveryPoint("manual")
+            .then(() => toast.success("Settings recovery point created"))
+            .catch(error =>
+              toast.error("Could not create recovery point", { description: error.message })
+            );
+        },
+      },
+      {
+        id: "restore-recovery-point",
+        type: "commands",
+        label: "Restore Latest Settings Recovery Point",
+        description: "Restore the newest saved settings snapshot and reload Ascendara",
+        badge: "Recovery",
+        onSelect: () => {
+          const confirmed = window.confirm(
+            "Restore the latest Ascendara settings recovery point? Your current settings will be replaced and the interface will reload."
+          );
+          if (!confirmed) return;
+
+          restoreLatestSettingsRecoveryPoint()
+            .then(() => window.location.reload())
+            .catch(error =>
+              toast.error("Could not restore recovery point", { description: error.message })
+            );
+        },
       },
       {
         id: "game-profiles",
