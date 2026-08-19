@@ -32,6 +32,11 @@ jobs:
       - name: Audit renderer compatibility
         run: node scripts/security-audit.cjs
 
+      # Feature centers intentionally stay modular and communicate through a tiny event
+      # boundary. Catch accidental hardcoded event names or routing regressions early.
+      - name: Audit feature center integration
+        run: node scripts/feature-center-audit.cjs
+
       # Syntax-check the files on the Electron privilege boundary before the full build.
       # A malformed preload or recovery handler is much easier to diagnose here than as a
       # blank window or missing recovery action later in the packaged application.
@@ -46,6 +51,7 @@ jobs:
           node --check electron/modules/window.js
           node --check scripts/dev-smoke-test.cjs
           node --check scripts/bundle-report.cjs
+          node --check scripts/feature-center-audit.cjs
 
       # These tests stay deliberately lightweight so IPC/preload/recovery regressions fail
       # before CI spends time packaging the complete Electron application.
