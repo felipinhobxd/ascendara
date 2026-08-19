@@ -156,6 +156,15 @@ const GlobalSearch = () => {
 
   const handleKeyDown = useCallback(
     event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSearch();
+        resetSearch();
+        return;
+      }
+
+      if (flatResults.length === 0) return;
+
       if (event.key === "ArrowDown") {
         event.preventDefault();
         setSelectedIndex(current => Math.min(current + 1, flatResults.length - 1));
@@ -165,10 +174,6 @@ const GlobalSearch = () => {
       } else if (event.key === "Enter" && flatResults[selectedIndex]) {
         event.preventDefault();
         handleSelect(flatResults[selectedIndex]);
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        closeSearch();
-        resetSearch();
       }
     },
     [closeSearch, flatResults, handleSelect, resetSearch, selectedIndex]
