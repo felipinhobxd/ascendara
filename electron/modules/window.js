@@ -1,4 +1,4 @@
-/**
+/*
  * Window Management Module
  * Handles window creation, visibility, and related operations
  */
@@ -42,6 +42,16 @@ function createWindow() {
 
   const windowWidth = isLaptop ? Math.min(1500, screenWidth * 0.9) : 1600;
   const windowHeight = isLaptop ? Math.min(700, screenHeight * 0.9) : 800;
+  const allowLegacyNodeIntegration =
+    process.env.ASCENDARA_LEGACY_NODE_INTEGRATION === "1";
+
+  if (allowLegacyNodeIntegration) {
+    // This switch is only here as a recovery path while older installations are being
+    // exercised against the isolated renderer. It should never become a normal launch flag.
+    console.warn(
+      "Legacy renderer Node integration is enabled through ASCENDARA_LEGACY_NODE_INTEGRATION=1."
+    );
+  }
 
   const iconFile = process.platform === "linux" ? "icon.png" : "icon.ico";
   const mainWindow = new BrowserWindow({
@@ -56,9 +66,10 @@ function createWindow() {
     fullscreen: startInBigPicture,
     webPreferences: {
       preload: path.join(__dirname, "..", "preload.js"),
-      // The renderer still has legacy Node-dependent paths. New code should use the
-      // preload bridge; this flag can be removed once those paths are migrated.
-      nodeIntegration: true,
+      // Page code should only reach privileged functionality through the named preload
+      // APIs. Keeping Node out of the renderer turns an XSS bug into a UI bug instead of
+      // automatically giving it filesystem/process access.
+      nodeIntegration: allowLegacyNodeIntegration,
       contextIsolation: true,
       // Linux packaging currently relies on the existing unsandboxed path. Keeping
       // it here avoids a silent platform regression while the IPC layer is tightened.
