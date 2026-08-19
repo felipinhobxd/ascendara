@@ -4,18 +4,68 @@ import { useLanguage } from "@/context/LanguageContext";
 import { useSearch } from "@/context/SearchContext";
 import { FEATURE_CENTER_EVENTS, openFeatureCenter } from "@/lib/featureCenterEvents";
 import { startPreviousVersionRollback } from "@/lib/recoveryActions";
-import {
-  createSettingsRecoveryPoint,
-  restoreLatestSettingsRecoveryPoint,
-} from "@/services/recoveryService";
+import { createSettingsRecoveryPoint } from "@/services/recoveryService";
 
 const keywords = {
-  system: ["system", "health", "diagnostics", "storage", "recovery", "sistema", "saúde", "diagnóstico", "armazenamento", "recuperação"],
-  health: ["health", "diagnostics", "dependencies", "services", "saúde", "diagnóstico", "dependências", "serviços"],
-  storage: ["storage", "disk", "space", "folders", "armazenamento", "disco", "espaço", "pastas"],
-  recovery: ["recovery", "safe mode", "rollback", "cache", "recuperação", "modo seguro"],
-  profiles: ["profiles", "launch commands", "backup", "umu", "save paths", "perfis", "comandos", "backup", "saves"],
-  collections: ["collections", "library", "never played", "continue playing", "coleções", "biblioteca", "nunca jogados"],
+  system: [
+    "system",
+    "health",
+    "diagnostics",
+    "storage",
+    "recovery",
+    "sistema",
+    "saúde",
+    "diagnóstico",
+    "armazenamento",
+    "recuperação",
+  ],
+  health: [
+    "health",
+    "diagnostics",
+    "dependencies",
+    "services",
+    "saúde",
+    "diagnóstico",
+    "dependências",
+    "serviços",
+  ],
+  storage: [
+    "storage",
+    "disk",
+    "space",
+    "folders",
+    "armazenamento",
+    "disco",
+    "espaço",
+    "pastas",
+  ],
+  recovery: [
+    "recovery",
+    "safe mode",
+    "rollback",
+    "cache",
+    "recuperação",
+    "modo seguro",
+  ],
+  profiles: [
+    "profiles",
+    "launch commands",
+    "backup",
+    "umu",
+    "save paths",
+    "perfis",
+    "comandos",
+    "saves",
+  ],
+  collections: [
+    "collections",
+    "library",
+    "never played",
+    "continue playing",
+    "coleções",
+    "biblioteca",
+    "nunca jogados",
+  ],
 };
 
 export function useCommandPaletteRegistration() {
@@ -72,7 +122,13 @@ export function useCommandPaletteRegistration() {
         type: "commands",
         label: t("featureCenters.commandPalette.commands.createRecovery.label"),
         description: t("featureCenters.commandPalette.commands.createRecovery.description"),
-        keywords: ["snapshot", "settings", "backup", "configurações", "ponto de recuperação"],
+        keywords: [
+          "snapshot",
+          "settings",
+          "backup",
+          "configurações",
+          "ponto de recuperação",
+        ],
         onSelect: () => {
           createSettingsRecoveryPoint("manual")
             .then(() => toast.success(t("featureCenters.system.toasts.pointCreated")))
@@ -84,28 +140,21 @@ export function useCommandPaletteRegistration() {
         },
       },
       {
-        id: "restore-recovery-point",
+        id: "open-recovery-points",
         type: "commands",
-        label: t("featureCenters.commandPalette.commands.restoreRecovery.label"),
-        description: t("featureCenters.commandPalette.commands.restoreRecovery.description"),
-        keywords: ["restore", "settings", "snapshot", "restaurar", "configurações"],
-        onSelect: () => {
-          const confirmed = window.confirm(
-            t("featureCenters.profiles.closeConfirm").replace(
-              t("featureCenters.profiles.title"),
-              t("featureCenters.system.recovery.recoveryPoints")
-            )
-          );
-          if (!confirmed) return;
-
-          restoreLatestSettingsRecoveryPoint()
-            .then(() => window.location.reload())
-            .catch(error =>
-              toast.error(t("featureCenters.system.toasts.pointRestoreFailed"), {
-                description: error.message,
-              })
-            );
-        },
+        label: t("featureCenters.system.recovery.recoveryPoints"),
+        description: t("featureCenters.system.recovery.recoveryPointsDescription"),
+        keywords: [
+          "restore",
+          "settings",
+          "snapshot",
+          "recovery points",
+          "restaurar",
+          "configurações",
+          "pontos de recuperação",
+        ],
+        onSelect: () =>
+          openFeatureCenter(FEATURE_CENTER_EVENTS.system, { tab: "recovery" }),
       },
       {
         id: "rollback-previous-version",
