@@ -21,6 +21,18 @@ function ensureSafeModeStyle() {
   document.head.appendChild(style);
 }
 
+function getAppVersion() {
+  return typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : null;
+}
+
+function invokeRecovery(channel, ...args) {
+  const invoke = window.electron?.ipcRenderer?.invoke;
+  if (typeof invoke !== "function") {
+    throw new Error("Ascendara recovery IPC is unavailable in this build");
+  }
+  return invoke(channel, ...args);
+}
+
 export function isSafeUiModeEnabled() {
   try {
     return localStorage.getItem(SAFE_MODE_KEY) === "1";
@@ -50,7 +62,7 @@ export function setSafeUiMode(enabled) {
 
 export function clearTransientUiState() {
   // These keys only control temporary UI flows. User library, sources, credentials,
-  // backups and settings deliberately stay untouched by recovery actions.
+  // backups and settings deliberately stay untouched by this lightweight reset.
   const transientKeys = [
     "forceLoading",
     "forceInstalling",
@@ -64,6 +76,32 @@ export function clearTransientUiState() {
       sessionStorage.removeItem(key);
     } catch {}
   }
+}
+
+export async function createSettingsRecoveryPoint(reason = "manual") {
+  return invokeRecovery(
+    "create-settings-recovery-point",
+    reason,
+    getAppVersion()
+  );
+}
+
+export async function listSettingsRecoveryPoints() {
+  const points = await invokeRecovery("list-settings-recovery-points");
+  return Array.isArray(points) ? points : [];
+}
+
+export async function restoreSettingsRecoveryPoint(id) {
+  if (!id) throw new Error("A recovery point is required");
+  return invokeRecovery("restore-settings-recovery-point", id);
+}
+
+export async function restoreLatestSettingsRecoveryPoint() {
+  const points = await listSettingsRecoveryPoints();
+  if (points.length === 0) {
+    throw new Error("No settings recovery point is available");
+  }
+  return restoreSettingsRecoveryPoint(points[0].id);
 }
 
 export function initializeRecoveryMode() {
