@@ -1,4 +1,5 @@
 const IPC_CHANNEL_PATTERN = /^[A-Za-z0-9:_-]+$/;
+const STRICT_LEGACY_IPC_ENV = "ASCENDARA_STRICT_RENDERER_IPC";
 
 function validateIpcChannel(channel) {
   if (typeof channel !== "string" || !IPC_CHANNEL_PATTERN.test(channel)) {
@@ -6,6 +7,10 @@ function validateIpcChannel(channel) {
   }
 
   return channel;
+}
+
+function legacyBridgeIsStrict() {
+  return process.env[STRICT_LEGACY_IPC_ENV] === "1";
 }
 
 /**
@@ -19,6 +24,7 @@ function createPreloadIpcTransport(ipcRenderer) {
   }
 
   const listenerRegistry = new Map();
+  const warnedLegacyCalls = new Set();
 
   function rememberListener(channel, callback, listener) {
     let callbacks = listenerRegistry.get(channel);
@@ -98,14 +104,50 @@ function createPreloadIpcTransport(ipcRenderer) {
     listenerRegistry.delete(safeChannel);
   }
 
+  function guardLegacyCall(method, channel) {
+    const safeChannel = validateIpcChannel(channel);
+    const callName = `ipcRenderer.${method}("${safeChannel}")`;
+
+    // Strict mode is used by the developer smoke test. If startup still depends on
+    // this compatibility object, CI fails at the exact call instead of letting us
+    // discover the dependency after nodeIntegration has already been disabled.
+    if (legacyBridgeIsStrict()) {
+      throw new Error(
+        `${callName} uses Ascendara's legacy renderer IPC bridge. Add or use a named preload API instead.`
+      );
+    }
+
+    // Keep production compatible during the migration, but leave one useful breadcrumb
+    // per call shape for support logs. Once the inventory reaches zero, this object can
+    // be removed instead of living as permanent security debt.
+    const warningKey = `${method}:${safeChannel}`;
+    if (!warnedLegacyCalls.has(warningKey)) {
+      warnedLegacyCalls.add(warningKey);
+      console.warn(
+        `[Preload] ${callName} is deprecated; migrate this caller to a named preload API.`
+      );
+    }
+
+    return safeChannel;
+  }
+
   const legacy = {
     on: (channel, callback) =>
-      subscribe(channel, callback, { includeEventPlaceholder: true }),
-    off: (channel, callback) => unsubscribe(channel, callback),
-    removeListener: (channel, callback) => unsubscribe(channel, callback),
-    invoke,
-    readFile: (filePath, encoding) => invoke("read-local-file", filePath, encoding),
-    writeFile: (filePath, content) => invoke("write-file", filePath, content),
+      subscribe(guardLegacyCall("on", channel), callback, {
+        includeEventPlaceholder: true,
+      }),
+    off: (channel, callback) => unsubscribe(guardLegacyCall("off", channel), callback),
+    removeListener: (channel, callback) =>
+      unsubscribe(guardLegacyCall("removeListener", channel), callback),
+    invoke: (channel, ...args) => invoke(guardLegacyCall("invoke", channel), ...args),
+    readFile: (filePath, encoding) => {
+      guardLegacyCall("readFile", "read-local-file");
+      return invoke("read-local-file", filePath, encoding);
+    },
+    writeFile: (filePath, content) => {
+      guardLegacyCall("writeFile", "write-file");
+      return invoke("write-file", filePath, content);
+    },
   };
 
   return {
@@ -118,6 +160,8 @@ function createPreloadIpcTransport(ipcRenderer) {
 }
 
 module.exports = {
+  STRICT_LEGACY_IPC_ENV,
   createPreloadIpcTransport,
+  legacyBridgeIsStrict,
   validateIpcChannel,
 };
