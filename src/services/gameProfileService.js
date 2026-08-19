@@ -95,8 +95,13 @@ export async function saveGameProfile(game, profile, isLinux) {
     throw new Error(savePathsResult.error || "Ascendara could not save custom save paths");
   }
 
-  if (isLinux && profile.umuId.trim()) {
-    await window.electron.umuSetGameId(gameName, profile.umuId.trim());
+  if (isLinux) {
+    // The official UMU handler treats an empty value as "remove the per-game override".
+    // Always send the field on Linux so clearing the input actually clears stale state.
+    const umuResult = await window.electron.umuSetGameId(gameName, profile.umuId.trim());
+    if (umuResult?.success === false) {
+      throw new Error(umuResult.error || "Ascendara could not save the UMU game ID");
+    }
   }
 
   return {
