@@ -1,10 +1,13 @@
 const net = require("net");
+const path = require("path");
 const { spawn } = require("child_process");
 
 const DEV_HOST = "127.0.0.1";
 const DEV_PORT = 5173;
+const DEBUG_PORT = 9223;
 const STARTUP_TIMEOUT_MS = 30_000;
-const STABILITY_WINDOW_MS = 12_000;
+const RENDERER_TIMEOUT_MS = 25_000;
+const STABILITY_WINDOW_MS = 5_000;
 
 const children = new Set();
 let cleaningUp = false;
@@ -25,6 +28,7 @@ function spawnTracked(command, args, label) {
       // CI runs without a real desktop session. Electron still needs a predictable
       // environment while Xvfb provides the display used by the smoke test.
       CI: "true",
+      ELECTRON_ENABLE_LOGGING: "1",
     },
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
@@ -53,7 +57,7 @@ function waitForPort(host, port, timeoutMs) {
       const retry = () => {
         socket.destroy();
         if (Date.now() - startedAt >= timeoutMs) {
-          reject(new Error(`Vite did not start on ${host}:${port} within ${timeoutMs} ms`));
+          reject(new Error(`Port ${host}:${port} did not open within ${timeoutMs} ms`));
           return;
         }
         setTimeout(tryConnect, 250);
@@ -65,6 +69,141 @@ function waitForPort(host, port, timeoutMs) {
 
     tryConnect();
   });
+}
+
+async function waitForRendererTarget(timeoutMs) {
+  const startedAt = Date.now();
+  const expectedOrigin = `http://${DEV_HOST}:${DEV_PORT}`;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(`http://${DEV_HOST}:${DEBUG_PORT}/json`);
+      if (response.ok) {
+        const targets = await response.json();
+        const target = targets.find(
+          item =>
+            item.type === "page" &&
+            typeof item.url === "string" &&
+            item.url.startsWith(expectedOrigin) &&
+            item.webSocketDebuggerUrl
+        );
+        if (target) return target;
+      }
+    } catch {
+      // The debugging endpoint starts a little after the Electron process. Retrying is
+      // expected here and keeps the failure message focused on the real timeout.
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+
+  throw new Error("Electron renderer did not expose a debuggable Ascendara page in time");
+}
+
+function connectToRenderer(webSocketUrl) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(webSocketUrl);
+    const pending = new Map();
+    const exceptions = [];
+    let nextId = 1;
+
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error("Timed out while connecting to the Electron renderer"));
+    }, 5000);
+
+    socket.addEventListener("open", () => {
+      clearTimeout(timeout);
+      resolve({
+        exceptions,
+        close: () => socket.close(),
+        call(method, params = {}) {
+          return new Promise((callResolve, callReject) => {
+            const id = nextId++;
+            pending.set(id, { resolve: callResolve, reject: callReject });
+            socket.send(JSON.stringify({ id, method, params }));
+          });
+        },
+      });
+    });
+
+    socket.addEventListener("message", event => {
+      const message = JSON.parse(String(event.data));
+      if (message.method === "Runtime.exceptionThrown") {
+        const details = message.params?.exceptionDetails;
+        exceptions.push(
+          details?.exception?.description ||
+            details?.text ||
+            "Unknown uncaught renderer exception"
+        );
+        return;
+      }
+
+      if (!message.id || !pending.has(message.id)) return;
+      const request = pending.get(message.id);
+      pending.delete(message.id);
+
+      if (message.error) request.reject(new Error(message.error.message));
+      else request.resolve(message.result);
+    });
+
+    socket.addEventListener("error", () => {
+      clearTimeout(timeout);
+      reject(new Error("Could not connect to the Electron renderer debugging socket"));
+    });
+  });
+}
+
+async function evaluate(renderer, expression) {
+  const response = await renderer.call("Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+
+  if (response.exceptionDetails) {
+    throw new Error(
+      response.exceptionDetails.exception?.description ||
+        response.exceptionDetails.text ||
+        "Renderer evaluation failed"
+    );
+  }
+
+  return response.result?.value;
+}
+
+async function waitForHealthyRenderer(renderer, timeoutMs) {
+  const startedAt = Date.now();
+  let lastState = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    lastState = await evaluate(
+      renderer,
+      `(() => {
+        const root = document.getElementById("root");
+        return {
+          readyState: document.readyState,
+          rootChildren: root ? root.childElementCount : 0,
+          electronBridge: typeof window.electron,
+          rendererRequire: typeof window.require,
+          rendererProcess: typeof window.process,
+          href: window.location.href,
+        };
+      })()`
+    );
+
+    if (
+      lastState?.readyState === "complete" &&
+      lastState.rootChildren > 0 &&
+      lastState.electronBridge === "object"
+    ) {
+      return lastState;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+
+  throw new Error(`Renderer never became healthy. Last state: ${JSON.stringify(lastState)}`);
 }
 
 function waitForStability(child, durationMs) {
@@ -132,12 +271,48 @@ async function main() {
   await waitForPort(DEV_HOST, DEV_PORT, STARTUP_TIMEOUT_MS);
   console.log("Vite is ready. Launching Electron under Xvfb...");
 
-  const electron = spawnTracked("xvfb-run", ["-a", "yarn", "electron"], "electron");
-  await waitForStability(electron, STABILITY_WINDOW_MS);
-
-  console.log(
-    `Developer smoke test passed: Electron stayed alive for ${STABILITY_WINDOW_MS / 1000} seconds after startup.`
+  const electronBinary = path.join(process.cwd(), "node_modules", ".bin", "electron");
+  const electron = spawnTracked(
+    "xvfb-run",
+    [
+      "-a",
+      electronBinary,
+      "./electron/app.js",
+      "--no-sandbox",
+      `--remote-debugging-port=${DEBUG_PORT}`,
+      `--remote-debugging-address=${DEV_HOST}`,
+    ],
+    "electron"
   );
+
+  await waitForPort(DEV_HOST, DEBUG_PORT, RENDERER_TIMEOUT_MS);
+  const target = await waitForRendererTarget(RENDERER_TIMEOUT_MS);
+  const renderer = await connectToRenderer(target.webSocketDebuggerUrl);
+
+  try {
+    await renderer.call("Runtime.enable");
+    const state = await waitForHealthyRenderer(renderer, RENDERER_TIMEOUT_MS);
+
+    if (state.rendererRequire !== "undefined" || state.rendererProcess !== "undefined") {
+      throw new Error(
+        `Renderer isolation failed: require=${state.rendererRequire}, process=${state.rendererProcess}`
+      );
+    }
+
+    await waitForStability(electron, STABILITY_WINDOW_MS);
+
+    if (renderer.exceptions.length > 0) {
+      throw new Error(
+        `Uncaught renderer exception(s):\n${renderer.exceptions.map(error => `- ${error}`).join("\n")}`
+      );
+    }
+
+    console.log(
+      `Developer smoke test passed: React mounted, preload bridge is available, Node globals are hidden, and Electron stayed stable for ${STABILITY_WINDOW_MS / 1000} seconds.`
+    );
+  } finally {
+    renderer.close();
+  }
 }
 
 process.on("SIGINT", async () => {
