@@ -7,6 +7,14 @@
  * - Lazy: Loaded on-demand when first accessed (improves startup time)
  */
 
+const { ipcMain } = require("electron");
+const security = require("./security");
+
+// Install the sender guard before requiring the feature modules below. A few of those
+// modules are large and evolve independently, so protecting ipcMain at the boundary is
+// safer than depending on every individual handler to remember the same origin check.
+security.installIpcMainGuard(ipcMain);
+
 // Cache for lazy-loaded modules
 const lazyModuleCache = {};
 
@@ -46,6 +54,7 @@ module.exports = {
   // Core utilities
   logger: require("./logger"),
   encryption: require("./encryption"),
+  security,
   utils: require("./utils"),
 
   // Settings management
@@ -92,6 +101,6 @@ module.exports = {
     return lazyLoaders.qrcode();
   },
   get umuDatabase() {
-  return lazyLoaders.umuDatabase();
+    return lazyLoaders.umuDatabase();
   },
 };
