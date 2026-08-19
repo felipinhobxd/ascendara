@@ -1,17 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
   CircleHelp,
   Database,
-  FolderCog,
-  Gauge,
   HardDrive,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
-  TerminalSquare,
+  Terminal,
   Wrench,
   XCircle,
 } from "lucide-react";
@@ -22,8 +21,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { checkServerStatus } from "@/services/serverStatus";
 import {
   clearTransientUiState,
+  createSettingsRecoveryPoint,
   initializeRecoveryMode,
   isSafeUiModeEnabled,
+  listSettingsRecoveryPoints,
+  restoreSettingsRecoveryPoint,
   setSafeUiMode,
 } from "@/services/recoveryService";
 
@@ -65,12 +67,13 @@ function formatBytes(value) {
   return `${(bytes / 1024 ** index).toFixed(index >= 3 ? 1 : 0)} ${units[index]}`;
 }
 
-function normalizeToolStatus(value) {
+function toolIsInstalled(value) {
   if (value === true) return true;
-  if (value && typeof value === "object") {
-    return value.installed === true || value.success === true || value.status === "installed";
-  }
-  return false;
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value.installed === true || value.success === true || value.status === "installed")
+  );
 }
 
 function HealthRow({ item, onAction }) {
@@ -104,6 +107,7 @@ function HealthRow({ item, onAction }) {
 }
 
 const SystemCenter = () => {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("health");
   const [checking, setChecking] = useState(false);
@@ -111,6 +115,8 @@ const SystemCenter = () => {
   const [storage, setStorage] = useState(null);
   const [storageLoading, setStorageLoading] = useState(false);
   const [safeUiMode, setSafeUiModeState] = useState(false);
+  const [recoveryPoints, setRecoveryPoints] = useState([]);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
 
   useEffect(() => {
     initializeRecoveryMode();
@@ -128,15 +134,13 @@ const SystemCenter = () => {
     return () => window.removeEventListener(SYSTEM_CENTER_EVENT, handleOpen);
   }, []);
 
-  const openSettings = useCallback(() => {
-    setOpen(false);
-    window.location.hash = "#/settings";
-  }, []);
-
-  const openLocalRefresh = useCallback(() => {
-    setOpen(false);
-    window.location.hash = "#/localrefresh";
-  }, []);
+  const closeAndNavigate = useCallback(
+    path => {
+      setOpen(false);
+      navigate(path);
+    },
+    [navigate]
+  );
 
   const refreshStorage = useCallback(async () => {
     setStorageLoading(true);
@@ -152,6 +156,18 @@ const SystemCenter = () => {
       toast.error("Could not inspect storage", { description: error.message });
     } finally {
       setStorageLoading(false);
+    }
+  }, []);
+
+  const refreshRecoveryPoints = useCallback(async () => {
+    setRecoveryLoading(true);
+    try {
+      setRecoveryPoints(await listSettingsRecoveryPoints());
+    } catch (error) {
+      console.error("[SystemCenter] Could not list recovery points:", error);
+      setRecoveryPoints([]);
+    } finally {
+      setRecoveryLoading(false);
     }
   }, []);
 
@@ -177,7 +193,8 @@ const SystemCenter = () => {
         action: settings ? null : { type: "settings", label: "Open Settings" },
       });
 
-      const downloadDirectory = settings?.downloadDirectory || (await window.electron.getDownloadDirectory());
+      const downloadDirectory =
+        settings?.downloadDirectory || (await window.electron.getDownloadDirectory());
       if (!downloadDirectory) {
         items.push({
           id: "download-directory",
@@ -194,7 +211,11 @@ const SystemCenter = () => {
         const freeSpace = Number(driveSpace?.freeSpace) || 0;
         items.push({
           id: "download-directory",
-          status: !writable ? "error" : freeSpace > 0 && freeSpace < LOW_SPACE_BYTES ? "warning" : "healthy",
+          status: !writable
+            ? "error"
+            : freeSpace > 0 && freeSpace < LOW_SPACE_BYTES
+              ? "warning"
+              : "healthy",
           title: "Game directory",
           description: !writable
             ? "Ascendara cannot create files in the configured game directory."
@@ -248,7 +269,7 @@ const SystemCenter = () => {
         description: serverStatus?.noInternet
           ? "No connection to Ascendara services was detected."
           : failedServices.length > 0
-            ? `Unavailable: ${failedServices.join(", ")}. Other local features can continue to work.`
+            ? `Unavailable: ${failedServices.join(", ")}. Local features can continue to work.`
             : "Monitor, API, CDN, LFS and R2 endpoints are reachable.",
       });
 
@@ -259,7 +280,7 @@ const SystemCenter = () => {
           id: "tools",
           status: "info",
           title: "Optional tools",
-          description: `${count} optional Ascendara tool${count === 1 ? " is" : "s are"} currently registered as installed.`,
+          description: `${count} optional Ascendara tool${count === 1 ? " is" : "s are"} registered as installed.`,
         });
       } catch {
         items.push({
@@ -281,7 +302,7 @@ const SystemCenter = () => {
             status: missing.length > 0 ? "warning" : "healthy",
             title: "Windows game dependencies",
             description: missing.length > 0
-              ? `${missing.length} dependency${missing.length === 1 ? " is" : "ies are"} missing: ${missing.map(item => item.name || item.file).join(", ")}.`
+              ? `${missing.length} missing: ${missing.map(item => item.name || item.file).join(", ")}.`
               : "Required game dependencies were detected.",
             action: missing.length > 0 ? { type: "install-dependencies", label: "Install" } : null,
           });
@@ -300,12 +321,12 @@ const SystemCenter = () => {
           const umu = await window.electron.isUmuInstalled();
           items.push({
             id: "umu",
-            status: normalizeToolStatus(umu) ? "healthy" : "info",
+            status: toolIsInstalled(umu) ? "healthy" : "info",
             title: "UMU Launcher",
-            description: normalizeToolStatus(umu)
-              ? "UMU Launcher is available for Linux game compatibility."
-              : "UMU Launcher is not installed. This is optional and can be configured from Settings.",
-            action: normalizeToolStatus(umu) ? null : { type: "settings", label: "Configure" },
+            description: toolIsInstalled(umu)
+              ? "UMU Launcher is available for Linux compatibility."
+              : "UMU Launcher is optional and is not currently installed.",
+            action: toolIsInstalled(umu) ? null : { type: "settings", label: "Configure" },
           });
         } catch {}
       }
@@ -314,11 +335,11 @@ const SystemCenter = () => {
         const steamCmd = await window.electron.isSteamCMDInstalled();
         items.push({
           id: "steamcmd",
-          status: normalizeToolStatus(steamCmd) ? "healthy" : "info",
+          status: toolIsInstalled(steamCmd) ? "healthy" : "info",
           title: "SteamCMD",
-          description: normalizeToolStatus(steamCmd)
+          description: toolIsInstalled(steamCmd)
             ? "SteamCMD is available."
-            : "SteamCMD is not installed. Workshop features can install it when needed.",
+            : "SteamCMD is optional and can be installed when Workshop features need it.",
         });
       } catch {}
     } catch (error) {
@@ -329,108 +350,120 @@ const SystemCenter = () => {
         title: "Health check interrupted",
         description: error.message || "An unexpected error interrupted the health check.",
       });
+    } finally {
+      setHealthItems(items);
+      setChecking(false);
     }
-
-    setHealthItems(items);
-    setChecking(false);
   }, []);
 
   useEffect(() => {
     if (!open) return;
     if (activeTab === "health") runHealthCheck();
     if (activeTab === "storage") refreshStorage();
-  }, [open, activeTab, runHealthCheck, refreshStorage]);
+    if (activeTab === "recovery") refreshRecoveryPoints();
+  }, [open, activeTab, runHealthCheck, refreshRecoveryPoints, refreshStorage]);
 
   const handleHealthAction = useCallback(
     async action => {
-      if (!action) return;
-      if (action.type === "settings") {
-        openSettings();
-        return;
-      }
-      if (action.type === "local-refresh") {
-        openLocalRefresh();
-        return;
-      }
-      if (action.type === "install-dependencies") {
-        try {
-          toast.info("Installing game dependencies…");
-          await window.electron.installDependencies();
-          toast.success("Dependency installer finished");
-          runHealthCheck();
-        } catch (error) {
-          toast.error("Dependency installation failed", { description: error.message });
-        }
+      if (action.type === "settings") return closeAndNavigate("/settings");
+      if (action.type === "local-refresh") return closeAndNavigate("/localrefresh");
+      if (action.type !== "install-dependencies") return;
+
+      try {
+        toast.info("Installing game dependencies…");
+        await window.electron.installDependencies();
+        toast.success("Dependency installer finished");
+        runHealthCheck();
+      } catch (error) {
+        toast.error("Dependency installation failed", { description: error.message });
       }
     },
-    [openSettings, openLocalRefresh, runHealthCheck]
+    [closeAndNavigate, runHealthCheck]
   );
 
   const overallHealth = useMemo(() => {
     if (healthItems.some(item => item.status === "error")) return "error";
     if (healthItems.some(item => item.status === "warning")) return "warning";
-    if (healthItems.length > 0) return "healthy";
-    return "info";
+    return healthItems.length > 0 ? "healthy" : "info";
   }, [healthItems]);
+
+  const createRecoveryPoint = async () => {
+    setRecoveryLoading(true);
+    try {
+      await createSettingsRecoveryPoint("manual");
+      toast.success("Settings recovery point created");
+      await refreshRecoveryPoints();
+    } catch (error) {
+      toast.error("Could not create recovery point", { description: error.message });
+    } finally {
+      setRecoveryLoading(false);
+    }
+  };
+
+  const restoreRecoveryPoint = async point => {
+    const confirmed = window.confirm(
+      `Restore settings from ${new Date(point.createdAt).toLocaleString()}? Current settings will be replaced and Ascendara will reload.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await restoreSettingsRecoveryPoint(point.id);
+      window.location.reload();
+    } catch (error) {
+      toast.error("Could not restore recovery point", { description: error.message });
+    }
+  };
+
+  const clearBrowserData = async () => {
+    const confirmed = window.confirm(
+      "Clear Ascendara browser data? This clears Chromium cache, cookies, LocalStorage and IndexedDB. You may be signed out and browser-backed UI preferences may reset. Installed games and the on-disk settings file are not deleted."
+    );
+    if (!confirmed) return;
+
+    try {
+      await window.electron.clearCache();
+      window.location.reload();
+    } catch (error) {
+      toast.error("Could not clear browser data", { description: error.message });
+    }
+  };
 
   const healthMeta = STATUS_META[overallHealth];
   const HealthIcon = healthMeta.icon;
   const driveDirectories = storage?.driveSpace?.directories || [];
   const gameDirectories = storage?.gamesSize?.directorySizes || [];
 
-  const handleSafeModeToggle = enabled => {
-    setSafeUiMode(enabled);
-    setSafeUiModeState(enabled);
-    toast.success(enabled ? "Safe UI Mode enabled" : "Safe UI Mode disabled", {
-      description: enabled
-        ? "Animations and transparency-heavy effects are reduced until you turn it off."
-        : "Normal interface effects have been restored.",
-    });
-  };
-
-  const clearCacheAndReload = async () => {
-    try {
-      await window.electron.clearCache();
-      clearTransientUiState();
-      window.location.reload();
-    } catch (error) {
-      toast.error("Could not clear cache", { description: error.message });
-    }
-  };
-
-  const tabButton = (id, label, Icon) => (
-    <Button
-      key={id}
-      variant={activeTab === id ? "secondary" : "ghost"}
-      className="justify-start gap-2"
-      onClick={() => setActiveTab(id)}
-    >
-      <Icon className="h-4 w-4" />
-      {label}
-    </Button>
-  );
-
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-h-[86vh] max-w-5xl overflow-hidden p-0">
+      <DialogContent className="max-h-[88vh] max-w-5xl overflow-hidden p-0">
         <DialogHeader className="border-b border-border px-6 py-5">
           <DialogTitle className="flex items-center gap-3 text-xl">
-            <ShieldCheck className="h-6 w-6 text-primary" />
-            Ascendara System Center
+            <ShieldCheck className="h-6 w-6 text-primary" /> Ascendara System Center
           </DialogTitle>
         </DialogHeader>
 
-        <div className="grid min-h-[560px] grid-cols-[190px_1fr]">
-          <aside className="flex flex-col gap-1 border-r border-border bg-muted/20 p-3">
-            {tabButton("health", "Health", Activity)}
-            {tabButton("storage", "Storage", HardDrive)}
-            {tabButton("recovery", "Recovery", Wrench)}
+        <div className="grid min-h-[560px] grid-cols-1 md:grid-cols-[180px_1fr]">
+          <aside className="flex gap-1 overflow-x-auto border-b border-border bg-muted/20 p-3 md:flex-col md:border-b-0 md:border-r">
+            {[
+              ["health", "Health", Activity],
+              ["storage", "Storage", HardDrive],
+              ["recovery", "Recovery", Wrench],
+            ].map(([id, label, Icon]) => (
+              <Button
+                key={id}
+                variant={activeTab === id ? "secondary" : "ghost"}
+                className="justify-start gap-2"
+                onClick={() => setActiveTab(id)}
+              >
+                <Icon className="h-4 w-4" /> {label}
+              </Button>
+            ))}
           </aside>
 
           <section className="overflow-y-auto p-6">
             {activeTab === "health" && (
               <div className="space-y-5">
-                <div className="flex items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
                     <div className="flex items-center gap-2">
                       <HealthIcon className={`h-6 w-6 ${healthMeta.className}`} />
@@ -445,16 +478,14 @@ const SystemCenter = () => {
                     {checking ? "Checking…" : "Run again"}
                   </Button>
                 </div>
-
                 <div className="space-y-3">
-                  {healthItems.length === 0 && checking ? (
-                    <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+                  {healthItems.map(item => (
+                    <HealthRow key={item.id} item={item} onAction={handleHealthAction} />
+                  ))}
+                  {checking && healthItems.length === 0 && (
+                    <p className="py-10 text-center text-sm text-muted-foreground">
                       Checking Ascendara…
-                    </div>
-                  ) : (
-                    healthItems.map(item => (
-                      <HealthRow key={item.id} item={item} onAction={handleHealthAction} />
-                    ))
+                    </p>
                   )}
                 </div>
               </div>
@@ -462,11 +493,9 @@ const SystemCenter = () => {
 
             {activeTab === "storage" && (
               <div className="space-y-6">
-                <div className="flex items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
-                    <h2 className="flex items-center gap-2 text-xl font-semibold text-foreground">
-                      <Gauge className="h-5 w-5 text-primary" /> Storage Manager
-                    </h2>
+                    <h2 className="text-xl font-semibold text-foreground">Storage Manager</h2>
                     <p className="mt-1 text-sm text-muted-foreground">
                       Uses Ascendara's existing directory scanner and drive-space cache.
                     </p>
@@ -477,49 +506,54 @@ const SystemCenter = () => {
                   </Button>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Games</p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {formatBytes(storage?.gamesSize?.totalSize)}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Free space</p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {formatBytes(storage?.driveSpace?.freeSpace)}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Total capacity</p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {formatBytes(storage?.driveSpace?.totalSpace)}
-                    </p>
-                  </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  {[
+                    ["Games", storage?.gamesSize?.totalSize],
+                    ["Free space", storage?.driveSpace?.freeSpace],
+                    ["Total capacity", storage?.driveSpace?.totalSpace],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
+                      <p className="mt-2 text-2xl font-semibold text-foreground">
+                        {formatBytes(value)}
+                      </p>
+                    </div>
+                  ))}
                 </div>
 
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-medium text-foreground">Configured locations</h3>
-                    <Button size="sm" variant="ghost" onClick={openSettings}>
-                      <FolderCog className="mr-2 h-4 w-4" /> Manage folders
-                    </Button>
-                  </div>
                   {driveDirectories.map(directory => {
-                    const gameSize = gameDirectories.find(item => item.path === directory.path)?.size || 0;
-                    const usedPercent = directory.totalSpace > 0
-                      ? Math.max(0, Math.min(100, ((directory.totalSpace - directory.freeSpace) / directory.totalSpace) * 100))
-                      : 0;
+                    const gameSize =
+                      gameDirectories.find(item => item.path === directory.path)?.size || 0;
+                    const usedPercent =
+                      directory.totalSpace > 0
+                        ? Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              ((directory.totalSpace - directory.freeSpace) /
+                                directory.totalSpace) *
+                                100
+                            )
+                          )
+                        : 0;
                     return (
                       <div key={directory.path} className="rounded-xl border border-border bg-card/60 p-4">
                         <div className="flex items-center justify-between gap-3">
-                          <p className="min-w-0 truncate font-mono text-xs text-foreground">{directory.path}</p>
-                          <span className="text-xs text-muted-foreground">{usedPercent.toFixed(0)}% used</span>
+                          <p className="min-w-0 truncate font-mono text-xs text-foreground">
+                            {directory.path}
+                          </p>
+                          <span className="text-xs text-muted-foreground">
+                            {usedPercent.toFixed(0)}% used
+                          </span>
                         </div>
                         <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-                          <div className="h-full rounded-full bg-primary" style={{ width: `${usedPercent}%` }} />
+                          <div
+                            className="h-full rounded-full bg-primary"
+                            style={{ width: `${usedPercent}%` }}
+                          />
                         </div>
-                        <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                        <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
                           <span>Games: {formatBytes(gameSize)}</span>
                           <span>Free: {formatBytes(directory.freeSpace)}</span>
                           <span>Total: {formatBytes(directory.totalSpace)}</span>
@@ -528,9 +562,9 @@ const SystemCenter = () => {
                     );
                   })}
                   {!storageLoading && driveDirectories.length === 0 && (
-                    <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                    <p className="py-10 text-center text-sm text-muted-foreground">
                       No storage locations are currently available.
-                    </div>
+                    </p>
                   )}
                 </div>
               </div>
@@ -543,21 +577,25 @@ const SystemCenter = () => {
                     <RotateCcw className="h-5 w-5 text-primary" /> Recovery
                   </h2>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Recovery actions are intentionally conservative and do not delete games, sources, backups or account data.
+                    Recovery points protect settings. They do not replace the Ascendara binary or game files.
                   </p>
                 </div>
 
                 <div className="rounded-xl border border-border bg-card p-5">
-                  <div className="flex items-start justify-between gap-5">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
                       <h3 className="font-medium text-foreground">Safe UI Mode</h3>
                       <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                        Reduces animations, transitions and transparency-heavy effects. Use this when the interface is stuttering or rendering incorrectly.
+                        Reduces animations, transitions and transparency-heavy effects when the interface is stuttering or rendering incorrectly.
                       </p>
                     </div>
                     <Button
                       variant={safeUiMode ? "secondary" : "outline"}
-                      onClick={() => handleSafeModeToggle(!safeUiMode)}
+                      onClick={() => {
+                        const enabled = !safeUiMode;
+                        setSafeUiMode(enabled);
+                        setSafeUiModeState(enabled);
+                      }}
                     >
                       {safeUiMode ? "Disable" : "Enable"}
                     </Button>
@@ -565,39 +603,84 @@ const SystemCenter = () => {
                 </div>
 
                 <div className="rounded-xl border border-border bg-card p-5">
-                  <h3 className="font-medium text-foreground">Reload interface</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Reloads the renderer without changing your library or settings.
-                  </p>
-                  <Button className="mt-4" variant="outline" onClick={() => window.location.reload()}>
-                    <RefreshCw className="mr-2 h-4 w-4" /> Reload
-                  </Button>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-medium text-foreground">Settings recovery points</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Ascendara automatically creates one when an update is ready. Up to five are retained.
+                      </p>
+                    </div>
+                    <Button variant="outline" onClick={createRecoveryPoint} disabled={recoveryLoading}>
+                      Create now
+                    </Button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {recoveryPoints.map(point => (
+                      <div
+                        key={point.id}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 p-3"
+                      >
+                        <div>
+                          <p className="text-sm font-medium text-foreground">
+                            {new Date(point.createdAt).toLocaleString()}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {point.reason || "manual"}
+                            {point.appVersion ? ` · Ascendara ${point.appVersion}` : ""}
+                          </p>
+                        </div>
+                        <Button size="sm" variant="outline" onClick={() => restoreRecoveryPoint(point)}>
+                          Restore settings
+                        </Button>
+                      </div>
+                    ))}
+                    {!recoveryLoading && recoveryPoints.length === 0 && (
+                      <p className="text-sm text-muted-foreground">No recovery points yet.</p>
+                    )}
+                  </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <h3 className="font-medium text-foreground">Clear UI cache and temporary state</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Clears Chromium cache and temporary UI-flow flags, then reloads Ascendara. Game data and configured sources are not intentionally removed by this action.
-                  </p>
-                  <Button className="mt-4" variant="outline" onClick={clearCacheAndReload}>
-                    <Database className="mr-2 h-4 w-4" /> Clear cache and reload
-                  </Button>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-xl border border-border bg-card p-5">
+                    <h3 className="font-medium text-foreground">Reset temporary UI state</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Clears only temporary loading, installing and tour flags. Account and game data stay untouched.
+                    </p>
+                    <Button
+                      className="mt-4"
+                      variant="outline"
+                      onClick={() => {
+                        clearTransientUiState();
+                        toast.success("Temporary UI state cleared");
+                      }}
+                    >
+                      <Wrench className="mr-2 h-4 w-4" /> Reset temporary state
+                    </Button>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-card p-5">
+                    <h3 className="font-medium text-foreground">Clear Chromium browser data</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Clears cache, cookies, LocalStorage and IndexedDB. You may be signed out; on-disk settings and installed games are not deleted.
+                    </p>
+                    <Button className="mt-4" variant="outline" onClick={clearBrowserData}>
+                      <Database className="mr-2 h-4 w-4" /> Clear browser data
+                    </Button>
+                  </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <h3 className="font-medium text-foreground">Developer diagnostics</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Opens DevTools using Ascendara's existing Electron command. This is useful for support and development builds.
-                  </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => window.location.reload()}>
+                    <RefreshCw className="mr-2 h-4 w-4" /> Reload interface
+                  </Button>
                   <Button
-                    className="mt-4"
                     variant="outline"
                     onClick={async () => {
                       const opened = await window.electron.openDevTools();
                       if (!opened) toast.info("DevTools are unavailable in this build.");
                     }}
                   >
-                    <TerminalSquare className="mr-2 h-4 w-4" /> Open DevTools
+                    <Terminal className="mr-2 h-4 w-4" /> Open DevTools
                   </Button>
                 </div>
               </div>
