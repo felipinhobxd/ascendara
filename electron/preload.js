@@ -195,6 +195,10 @@ contextBridge.exposeInMainWorld("electron", {
   cancelTranslation: () => ipcRenderer.invoke("cancel-translation"),
   getDownloadedLanguages: () => ipcRenderer.invoke("get-downloaded-languages"),
   languageFileExists: filename => ipcRenderer.invoke("language-file-exists", filename),
+  onTranslationProgress: callback =>
+    preloadIpc.subscribe("translation-progress", callback, {
+      selectArgs: args => [args[0]],
+    }),
 
   //===========================================================================
   // LOCAL INDEX REFRESH
@@ -222,6 +226,10 @@ contextBridge.exposeInMainWorld("electron", {
   onLocalRefreshCookieNeeded: callback =>
     preloadIpc.subscribe("local-refresh-cookie-needed", callback, {
       selectArgs: () => [],
+    }),
+  onSteamripCookieReceived: callback =>
+    preloadIpc.subscribe("steamrip-cookie-received", callback, {
+      selectArgs: args => [args[0]],
     }),
   offLocalRefreshProgress: () =>
     preloadIpc.removeAllListeners("local-refresh-progress"),
@@ -475,7 +483,6 @@ contextBridge.exposeInMainWorld("electron", {
   downloadUpdate: () => ipcRenderer.invoke("download-update"),
   updateAscendara: () => ipcRenderer.invoke("update-ascendara"),
   isUpdateDownloaded: () => ipcRenderer.invoke("is-update-downloaded"),
-  isBrokenVersion: () => ipcRenderer.invoke("is-broken-version"),
   deleteInstaller: () => ipcRenderer.invoke("delete-installer"),
   uninstallAscendara: () => ipcRenderer.invoke("uninstall-ascendara"),
   switchBranch: branch => ipcRenderer.invoke("switch-branch", branch),
@@ -487,9 +494,14 @@ contextBridge.exposeInMainWorld("electron", {
     preloadIpc.subscribe("update-ready", callback, {
       includeEventPlaceholder: true,
     }),
+  onUpdateDownloadProgress: callback =>
+    preloadIpc.subscribe("update-download-progress", callback, {
+      selectArgs: args => [args[0]],
+    }),
   removeUpdateAvailableListener: callback =>
     preloadIpc.unsubscribe("update-available", callback),
-  removeUpdateReadyListener: callback => preloadIpc.unsubscribe("update-ready", callback),
+  removeUpdateReadyListener: callback =>
+    preloadIpc.unsubscribe("update-ready", callback),
   onBranchSwitchProgress: callback =>
     preloadIpc.subscribe("branch-switch-progress", callback, {
       selectArgs: args => [args[0]],
@@ -545,8 +557,12 @@ contextBridge.exposeInMainWorld("electron", {
   requestAscendaraService: (url, options) =>
     ipcRenderer.invoke("request-ascendara-service", url, options),
 
-  // Kept as a temporary compatibility alias for older renderer code. It is no longer
-  // a general Node HTTPS escape hatch; the same strict main-process policy applies.
+  // Custom Sources accept user-selected public URLs, so they need a separate API with
+  // SSRF checks instead of being folded into the much narrower health-check request.
+  fetchCustomSource: url => ipcRenderer.invoke("fetch-custom-source", url),
+
+  // Kept as a temporary compatibility alias for older renderer code. External URLs are
+  // still forced through the same public-HTTPS/SSRF policy in the main process.
   request: (url, options) =>
     ipcRenderer.invoke("request-ascendara-service", url, options),
 
