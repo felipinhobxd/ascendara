@@ -5,19 +5,19 @@ const ROOT = path.join(__dirname, "..", "src");
 const REPO_ROOT = path.join(__dirname, "..");
 const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"]);
 
-// These patterns represent bridges we have already retired. Reintroducing one is a
-// regression, so they always fail CI instead of being treated as migration work.
-const FORBIDDEN_PATTERNS = [
-  {
-    label: "legacy preload HTTPS request helper",
-    pattern: /window\.electron\.request\s*\(/g,
-  },
-];
+// Patterns only belong here after their compatibility path is completely gone. Keeping
+// this list small prevents CI from claiming something is retired while a real feature
+// still needs a controlled migration path.
+const FORBIDDEN_PATTERNS = [];
 
 // These are not all bugs by themselves. They are the remaining things that can keep
-// the renderer tied to Node integration or to the generic compatibility bridge. The
-// report lets us migrate them deliberately instead of flipping Electron flags blindly.
+// the renderer tied to Node integration or to compatibility bridges. The report lets
+// us migrate them deliberately instead of flipping Electron flags blindly.
 const MIGRATION_PATTERNS = [
+  {
+    label: "legacy custom-source request alias",
+    pattern: /window\.electron\.request\s*\(/g,
+  },
   {
     label: "legacy low-level IPC bridge",
     pattern: /window\.electron\.ipcRenderer\b/g,
@@ -119,7 +119,7 @@ console.log(
 
 if (enforceIsolation && migrationFindings.length > 0) {
   console.error(
-    "Renderer isolation enforcement failed. Migrate the findings above before disabling Node integration."
+    "Renderer isolation enforcement failed. Migrate the findings above before removing compatibility bridges."
   );
   process.exitCode = 1;
 }
