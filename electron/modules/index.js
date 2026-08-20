@@ -12,14 +12,9 @@ const security = require("./security");
 const rendererNetwork = require("./renderer-network");
 const recovery = require("./recovery");
 
-// Install the sender guard before requiring the feature modules below. A few of those
-// modules are large and evolve independently, so protecting ipcMain at the boundary is
-// safer than depending on every individual handler to remember the same origin check.
+// Install the IPC guard before feature modules register their handlers.
 security.installIpcMainGuard(ipcMain);
 
-// Register small cross-cutting handlers before feature modules are loaded. They do not
-// change Ascendara's startup behavior, but they need the same sender guard as every other
-// privileged IPC surface.
 rendererNetwork.registerRendererNetworkHandlers(ipcMain);
 recovery.registerRecoveryHandlers(ipcMain);
 
