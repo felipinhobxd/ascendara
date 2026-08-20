@@ -13,11 +13,7 @@ function legacyBridgeIsStrict() {
   return process.env[STRICT_LEGACY_IPC_ENV] === "1";
 }
 
-/**
- * Build the small transport used by preload APIs instead of handing ipcRenderer
- * objects to the page. Keeping listener bookkeeping here also fixes a subtle leak:
- * removing the original callback cannot remove the wrapper that was registered.
- */
+// Keep the wrapper that Electron receives so unsubscribe can remove the right listener.
 function createPreloadIpcTransport(ipcRenderer) {
   if (!ipcRenderer || typeof ipcRenderer.invoke !== "function") {
     throw new TypeError("A valid ipcRenderer instance is required");
@@ -68,8 +64,7 @@ function createPreloadIpcTransport(ipcRenderer) {
         throw new TypeError(`Argument selector for "${safeChannel}" must return an array`);
       }
 
-      // Some legacy callbacks used (event, data). Passing null keeps their argument
-      // positions stable without exposing Electron's privileged event object.
+      // Some older callbacks expect (event, data), but the page does not need the event.
       if (includeEventPlaceholder) {
         callback(null, ...selectedArgs);
       } else {
@@ -108,17 +103,14 @@ function createPreloadIpcTransport(ipcRenderer) {
     const safeChannel = validateIpcChannel(channel);
     const callName = `ipcRenderer.${method}("${safeChannel}")`;
 
-    // Strict mode is an opt-in migration tool, not the normal Ascendara runtime. It is
-    // useful when deliberately testing whether a feature can live without this legacy
-    // bridge, while regular builds stay compatible with the official application.
+    // Strict mode is only for finding callers that still use the legacy bridge.
     if (legacyBridgeIsStrict()) {
       throw new Error(
         `${callName} uses Ascendara's legacy renderer IPC bridge. Add or use a named preload API instead.`
       );
     }
 
-    // Keep normal builds compatible, but leave one useful breadcrumb per call shape for
-    // support logs. That gives future cleanup work a trail without changing user behavior.
+    // Warn once per call shape without changing normal runtime behavior.
     const warningKey = `${method}:${safeChannel}`;
     if (!warnedLegacyCalls.has(warningKey)) {
       warnedLegacyCalls.add(warningKey);
