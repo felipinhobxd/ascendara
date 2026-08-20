@@ -98,8 +98,7 @@ export function ThemeProvider({ children }) {
       }
     };
 
-    // The preload owns the Electron listener and gives us a plain unsubscribe function.
-    // This keeps the context unaware of ipcRenderer while preserving the callback shape.
+    // Keep the callback shape used by the existing settings listener.
     return window.electron.onSettingsChanged(handleSettingsChange);
   }, []);
 
