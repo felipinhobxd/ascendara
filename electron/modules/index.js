@@ -7,6 +7,22 @@
  * - Lazy: Loaded on-demand when first accessed (improves startup time)
  */
 
+const { ipcMain } = require("electron");
+const security = require("./security");
+const rendererNetwork = require("./renderer-network");
+const recovery = require("./recovery");
+
+// Install the sender guard before requiring the feature modules below. A few of those
+// modules are large and evolve independently, so protecting ipcMain at the boundary is
+// safer than depending on every individual handler to remember the same origin check.
+security.installIpcMainGuard(ipcMain);
+
+// Register small cross-cutting handlers before feature modules are loaded. They do not
+// change Ascendara's startup behavior, but they need the same sender guard as every other
+// privileged IPC surface.
+rendererNetwork.registerRendererNetworkHandlers(ipcMain);
+recovery.registerRecoveryHandlers(ipcMain);
+
 // Cache for lazy-loaded modules
 const lazyModuleCache = {};
 
@@ -46,6 +62,9 @@ module.exports = {
   // Core utilities
   logger: require("./logger"),
   encryption: require("./encryption"),
+  recovery,
+  rendererNetwork,
+  security,
   utils: require("./utils"),
 
   // Settings management
@@ -92,6 +111,6 @@ module.exports = {
     return lazyLoaders.qrcode();
   },
   get umuDatabase() {
-  return lazyLoaders.umuDatabase();
+    return lazyLoaders.umuDatabase();
   },
 };

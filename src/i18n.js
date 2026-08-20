@@ -12,6 +12,7 @@ import zhCN from "./translations/zh-CN.json";
 import it from "./translations/it.json";
 import de from "./translations/de.json";
 import fr from "./translations/fr.json";
+import featureCenterResources from "./i18n/featureCenterResources";
 
 // Base languages that come with the app
 export const baseLanguages = {
@@ -87,5 +88,11 @@ i18n.use(initReactI18next).init({
     escapeValue: false,
   },
 });
+
+// Keep fork-specific product copy out of the large upstream translation JSON files.
+// This makes upstream merges smaller while still using the same i18next fallback rules.
+for (const [language, resources] of Object.entries(featureCenterResources)) {
+  i18n.addResourceBundle(language, "translation", resources, true, true);
+}
 
 export default i18n;

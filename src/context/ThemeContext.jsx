@@ -98,11 +98,9 @@ export function ThemeProvider({ children }) {
       }
     };
 
-    window.electron.ipcRenderer.on("settings-updated", handleSettingsChange);
-
-    return () => {
-      window.electron.ipcRenderer.off("settings-updated", handleSettingsChange);
-    };
+    // The preload owns the Electron listener and gives us a plain unsubscribe function.
+    // This keeps the context unaware of ipcRenderer while preserving the callback shape.
+    return window.electron.onSettingsChanged(handleSettingsChange);
   }, []);
 
   const setTheme = useCallback(newTheme => {

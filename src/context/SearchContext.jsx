@@ -17,6 +17,7 @@ export const SearchProvider = ({ children }) => {
     library: [],
     settings: [],
     index: [],
+    commands: [],
   });
 
   const registerSearchable = useCallback((type, items) => {
@@ -37,8 +38,11 @@ export const SearchProvider = ({ children }) => {
       return registryRef.current.settings;
     } else if (context === "index") {
       return registryRef.current.index;
+    } else if (context === "commands") {
+      return registryRef.current.commands;
     } else {
       return [
+        ...registryRef.current.commands,
         ...registryRef.current.library,
         ...registryRef.current.settings,
         ...registryRef.current.index,
