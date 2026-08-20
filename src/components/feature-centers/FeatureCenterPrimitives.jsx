@@ -1,6 +1,12 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 export function FeatureCenterDialog({
@@ -26,7 +32,7 @@ export function FeatureCenterDialog({
             <span className="truncate">{title}</span>
           </DialogTitle>
           {description && (
-            <p className="max-w-3xl text-sm text-muted-foreground">{description}</p>
+            <DialogDescription className="max-w-3xl">{description}</DialogDescription>
           )}
         </DialogHeader>
         <div className="min-h-0 flex-1">{children}</div>
