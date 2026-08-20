@@ -61,8 +61,7 @@ export function setSafeUiMode(enabled) {
 }
 
 export function clearTransientUiState() {
-  // These keys only control temporary UI flows. User library, sources, credentials,
-  // backups and settings deliberately stay untouched by this lightweight reset.
+  // Only clear temporary UI flags; library data and settings stay untouched.
   const transientKeys = [
     "forceLoading",
     "forceInstalling",
