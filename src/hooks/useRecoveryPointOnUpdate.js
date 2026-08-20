@@ -3,9 +3,7 @@ import { createSettingsRecoveryPoint } from "@/services/recoveryService";
 
 export function useRecoveryPointOnUpdate() {
   useEffect(() => {
-    // The updater already emits update-ready at the safest point to snapshot settings.
-    // Keeping this listener isolated means command palette changes cannot accidentally
-    // disable the pre-update recovery behavior.
+    // Snapshot settings when the updater reports that the installer is ready.
     const handleUpdateReady = async () => {
       try {
         const point = await createSettingsRecoveryPoint("before-update");
