@@ -5,8 +5,7 @@ const APP_ORIGINS = new Set([
   "http://127.0.0.1:46859",
 ]);
 
-// ipcMain is a singleton in Electron, but keeping this as a WeakSet makes the guard
-// safe to call from startup code more than once without wrapping handlers repeatedly.
+// Avoid wrapping the same ipcMain instance twice.
 const guardedIpcMainInstances = new WeakSet();
 
 function parseHttpUrl(rawUrl) {
@@ -62,11 +61,7 @@ function createTrustedIpcListener(channel, listener, onBlocked) {
   };
 }
 
-/**
- * Wrap Electron's handle APIs once, before feature modules register their channels.
- * This is the only security behavior this module owns: every privileged invoke must
- * come from Ascendara's local renderer, including handlers added by future modules.
- */
+// Validate every ipcMain.handle call registered after this point.
 function installIpcMainGuard(ipcMain, options = {}) {
   if (!ipcMain || typeof ipcMain.handle !== "function") {
     throw new TypeError("A valid Electron ipcMain instance is required");
