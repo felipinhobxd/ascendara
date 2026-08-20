@@ -14,8 +14,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const { createPreloadIpcTransport } = require("./modules/preload-bridge");
 
-// Keep listener wrapping and legacy bookkeeping outside the exposed object. The page
-// gets plain functions, never Electron's ipcRenderer or IPC event instances directly.
+// Keep listener wrappers private so the page never receives Electron event objects.
 const preloadIpc = createPreloadIpcTransport(ipcRenderer);
 
 //=============================================================================
@@ -25,9 +24,7 @@ contextBridge.exposeInMainWorld("electron", {
   //===========================================================================
   // IPC RENDERER (Legacy low-level access)
   //===========================================================================
-  // Older renderer code still calls this object directly. It now goes through the
-  // hardened transport so we can migrate those callers gradually without breaking
-  // releases that still depend on the old API shape.
+  // Older renderer code still uses this object, so keep it while those callers migrate.
   ipcRenderer: preloadIpc.legacy,
 
   //===========================================================================
@@ -91,8 +88,7 @@ contextBridge.exposeInMainWorld("electron", {
   getSteamApiKey: () => ipcRenderer.invoke("get-steam-api-key"),
   onSettingsChanged: callback =>
     preloadIpc.subscribe("settings-updated", callback, {
-      // This callback historically received (event, ...args). Keep the data positions
-      // stable while replacing the privileged Electron event with null.
+      // Keep the old (event, data) callback shape without exposing the Electron event.
       includeEventPlaceholder: true,
     }),
 
@@ -553,17 +549,14 @@ contextBridge.exposeInMainWorld("electron", {
   getSteamGridUrls: gameName => ipcRenderer.invoke("steamgrid-get-urls", gameName),
   getSteamGridHeader: gameName => ipcRenderer.invoke("steamgrid-get-header", gameName),
 
-  // Status checks use a deliberately narrow main-process request handler. The host,
-  // method, headers, timeout and response size are all constrained on the other side.
+  // Service status checks use the restricted request handler.
   requestAscendaraService: (url, options) =>
     ipcRenderer.invoke("request-ascendara-service", url, options),
 
-  // Custom Sources accept user-selected public URLs, so they need a separate API with
-  // SSRF checks instead of being folded into the much narrower health-check request.
+  // External Sources keep the same HTTPS URL support as the existing source flow.
   fetchCustomSource: url => ipcRenderer.invoke("fetch-custom-source", url),
 
-  // Kept as a temporary compatibility alias for older renderer code. External URLs are
-  // still forced through the same public-HTTPS/SSRF policy in the main process.
+  // Older callers still use request(), so keep it as an alias for the shared dispatcher.
   request: (url, options) =>
     ipcRenderer.invoke("request-ascendara-service", url, options),
 
