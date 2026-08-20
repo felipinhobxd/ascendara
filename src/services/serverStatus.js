@@ -7,9 +7,7 @@ const ENDPOINTS = {
 };
 
 const requestServiceStatus = (url, options) => {
-  // Status checks deliberately use the narrow main-process bridge instead of a
-  // general HTTPS helper. That keeps this service useful even after preload loses
-  // direct Node networking access.
+  // Service checks use the restricted main-process request path.
   return window.electron.requestAscendaraService(url, options);
 };
 
