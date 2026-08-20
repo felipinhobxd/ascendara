@@ -185,8 +185,7 @@ export function SettingsProvider({ children }) {
       }));
     };
 
-    // The context should consume application events, not Electron primitives. The
-    // preload keeps the historical (event, data) callback shape while hiding ipcRenderer.
+    // Keep the callback shape used by the existing settings listener.
     return window.electron.onSettingsChanged(handleSettingsChange);
   }, []);
 
