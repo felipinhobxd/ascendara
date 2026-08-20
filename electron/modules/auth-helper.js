@@ -7,10 +7,7 @@
 const crypto = require("crypto");
 const buildSignatureLoader = require("./build-signature-loader");
 
-// Official packaged builds provide config.prod.js, but the file is intentionally ignored
-// by Git because it contains private credentials. A clean source checkout must still be
-// able to start; protected endpoints simply remain unauthenticated until the official
-// secret is present.
+// Source checkouts do not include the private production config.
 let productionConfig = {};
 try {
   productionConfig = require("../config.prod.js");
