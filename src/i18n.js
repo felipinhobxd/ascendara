@@ -89,8 +89,7 @@ i18n.use(initReactI18next).init({
   },
 });
 
-// Keep fork-specific product copy out of the large upstream translation JSON files.
-// This makes upstream merges smaller while still using the same i18next fallback rules.
+// Feature Center copy lives in its own bundle to keep the base translation files smaller.
 for (const [language, resources] of Object.entries(featureCenterResources)) {
   i18n.addResourceBundle(language, "translation", resources, true, true);
 }
