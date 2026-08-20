@@ -24,8 +24,7 @@ function normalizeServiceRequest(rawUrl, options = {}) {
     throw new Error(`Service request host is not allowed: ${parsedUrl.hostname || "unknown"}`);
   }
 
-  // This channel is only for Ascendara's root health checks. Keeping it narrow makes
-  // status polling predictable without changing the separate External Sources behavior.
+  // This path is only for the root service status checks.
   if (
     parsedUrl.username ||
     parsedUrl.password ||
@@ -109,9 +108,7 @@ function normalizeExternalRequest(rawUrl, options = {}) {
     throw new TypeError("External request URL must be a valid URL");
   }
 
-  // The upstream preload used Node's https.request directly, so HTTPS is the actual
-  // compatibility boundary. Do not add host, port, or response-size restrictions here:
-  // External Sources are user-provided and can be very large or self-hosted.
+  // External Sources have always accepted HTTPS URLs, including self-hosted sources.
   if (parsedUrl.protocol !== "https:") {
     throw new Error("External requests must use HTTPS");
   }
@@ -140,9 +137,7 @@ function requestExternalResource(rawUrl, options = {}) {
       response => {
         let data = "";
 
-        // This intentionally mirrors the official preload helper instead of imposing a
-        // small cap. Some Hydra-compatible External Sources contain hundreds of thousands
-        // of entries, so an arbitrary launcher-side limit would be a compatibility bug.
+        // Large source indexes are valid, so do not cap the response here.
         response.setEncoding("utf8");
         response.on("data", chunk => {
           data += chunk;
@@ -186,9 +181,7 @@ function isAscendaraHealthRequest(rawUrl) {
 }
 
 function registerRendererNetworkHandlers(ipcMain) {
-  // The legacy request alias is shared by service status checks and official External
-  // Sources flows. Only the exact root status endpoints take the narrow path; other HTTPS
-  // routes, including api.ascendara.app source-bucket routes, keep upstream behavior.
+  // Only exact status URLs use the restricted path. Other HTTPS requests keep source compatibility.
   ipcMain.handle("request-ascendara-service", (_event, rawUrl, options) => {
     if (isAscendaraHealthRequest(rawUrl)) {
       return requestAscendaraService(rawUrl, options);
